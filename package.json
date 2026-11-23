@@ -10,11 +10,12 @@
     "plc:test": "node scripts/plc-test.mjs",
     "oip:validate": "node scripts/validate-oip-cell.mjs",
     "oip:desktop": "node scripts/oip-desktop.mjs",
+    "test:contract": "node --test tests/io-contract.test.mjs",
     "test:tracer": "node --test tests/tracer-modbus.test.mjs",
     "test:e2e": "node --test tests/conveyor-cell-e2e.test.mjs",
     "test:opencode": "node --test tests/opencode-config.test.mjs",
     "test:orchestrate": "node --test tests/orchestrate-cell.test.mjs",
     "orchestrate": "node scripts/orchestrate-cell.mjs",
-    "verify:all": "npm run plc:test && npm run oip:validate && npm run test:opencode && npm run test:orchestrate && npm run test:tracer && npm run test:e2e"
+    "verify:all": "npm run test:contract && npm run plc:test && npm run oip:validate && npm run test:opencode && npm run test:orchestrate && npm run test:tracer && npm run test:e2e"
   }
 }

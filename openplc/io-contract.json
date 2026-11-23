@@ -24,6 +24,7 @@
       "direction": "oip_to_plc",
       "modbusArea": "discreteInput",
       "modbusAddress": 0,
+      "sceneRole": { "partId": "start_pb", "param": "tag" },
       "description": "Momentary Start push button (TRUE = pressed)"
     },
     {
@@ -33,6 +34,7 @@
       "direction": "oip_to_plc",
       "modbusArea": "discreteInput",
       "modbusAddress": 1,
+      "sceneRole": { "partId": "stop_pb", "param": "tag" },
       "description": "Momentary Stop push button (TRUE = pressed)"
     },
     {
@@ -42,6 +44,7 @@
       "direction": "oip_to_plc",
       "modbusArea": "discreteInput",
       "modbusAddress": 2,
+      "sceneRole": { "partId": "estop_pb", "param": "tag" },
       "description": "Latched Emergency Stop interlock (TRUE = active/tripped)"
     },
     {
@@ -51,6 +54,7 @@
       "direction": "oip_to_plc",
       "modbusArea": "discreteInput",
       "modbusAddress": 3,
+      "sceneRole": { "partId": "reset_pb", "param": "tag" },
       "description": "Momentary Reset button (resets Box_Count when stopped, clears Jam Fault when Photo-Eye is clear)"
     },
     {
@@ -60,6 +64,7 @@
       "direction": "oip_to_plc",
       "modbusArea": "discreteInput",
       "modbusAddress": 4,
+      "sceneRole": { "partId": "photoeye_1", "param": "tag" },
       "description": "Photo-Eye mounted near conveyor discharge (TRUE = box detected)"
     },
     {
@@ -69,6 +74,7 @@
       "direction": "plc_to_oip",
       "modbusArea": "coil",
       "modbusAddress": 0,
+      "sceneRole": { "partId": "belt_1", "param": "runTag" },
       "description": "Conveyor drive motor command"
     },
     {
@@ -78,6 +84,7 @@
       "direction": "plc_to_oip",
       "modbusArea": "coil",
       "modbusAddress": 1,
+      "sceneRole": { "partId": "spawner_1", "param": "runTag" },
       "description": "Box spawner enable command (inhibited when conveyor stopped/dwelling, gated by spawn cooldown)"
     },
     {
@@ -87,6 +94,7 @@
       "direction": "plc_to_oip",
       "modbusArea": "coil",
       "modbusAddress": 2,
+      "sceneRole": { "partId": "start_pb", "param": "lampTag" },
       "description": "Green indicator light illuminated while the Cell is running"
     },
     {
@@ -96,6 +104,7 @@
       "direction": "plc_to_oip",
       "modbusArea": "coil",
       "modbusAddress": 3,
+      "sceneRole": { "partId": "stop_pb", "param": "lampTag" },
       "description": "Amber indicator light illuminated during the 2-second Inspection Dwell"
     },
     {
@@ -105,6 +114,7 @@
       "direction": "plc_to_oip",
       "modbusArea": "coil",
       "modbusAddress": 4,
+      "sceneRole": { "partId": "estop_pb", "param": "lampTag" },
       "description": "Red indicator light illuminated on E-Stop or Photo-Eye Jam Fault"
     },
     {
@@ -114,6 +124,7 @@
       "direction": "plc_to_oip",
       "modbusArea": "holdingRegister",
       "modbusAddress": 0,
+      "sceneRole": { "partId": "batch_indicator", "param": "tag" },
       "description": "Current Batch box count (0..5)"
     }
   ]
