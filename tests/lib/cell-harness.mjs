@@ -85,6 +85,102 @@ export async function startContractModbusServer({
 }
 
 /**
+ * Start a standalone contract-derived Modbus TCP + OpenPLC session without
+ * spinning up SimWorld. Owns Modbus server lifecycle, symbolic I/O reads/writes,
+ * polling waitUntil, and OpenPLC deploy/stop teardown.
+ */
+export async function createModbusTestSession({
+  contractPath = join(REPO_ROOT, 'openplc', 'io-contract.json'),
+  stPath,
+  modbusMasterPath,
+  runtimeUrl = DEFAULT_OPENPLC_URL,
+  modbusPort,
+}) {
+  const contract = JSON.parse(readFileSync(contractPath, 'utf8'))
+  const inputSignals = contract.signals.filter((s) => s.direction === 'oip_to_plc')
+  const outputSignals = contract.signals.filter((s) => s.direction === 'plc_to_oip')
+  const inputByName = new Map(inputSignals.map((s) => [s.name, s]))
+
+  const modbus = await startContractModbusServer({
+    contract,
+    host: '0.0.0.0',
+    ...(modbusPort !== undefined ? { port: modbusPort } : {}),
+  })
+  let client = null
+
+  const dispose = async () => {
+    if (client) {
+      const c = client
+      client = null
+      await c.stop().catch(() => {})
+    }
+    await modbus.close()
+  }
+
+  try {
+    const simTags = {}
+    for (const sig of inputSignals) {
+      simTags[sig.iecAddress] = defaultSignalValue(sig)
+    }
+    modbus.io.writeSimTags(simTags)
+
+    const deployed = await deployProgram({
+      stPath,
+      modbusMasterPath,
+      runtimeUrl,
+      startAfterDeploy: true,
+    })
+    client = deployed.client
+    assert.equal(deployed.compilationStatus, 'SUCCESS')
+
+    const snapshot = () => {
+      const plcOut = modbus.io.plcTags()
+      const inputs = {}
+      for (const sig of inputSignals) {
+        inputs[sig.name] = simTags[sig.iecAddress] ?? defaultSignalValue(sig)
+      }
+      const outputs = {}
+      for (const sig of outputSignals) {
+        outputs[sig.name] = plcOut[sig.iecAddress] ?? defaultSignalValue(sig)
+      }
+      return { inputs, outputs, modbus: modbus.modbusTraffic() }
+    }
+
+    const setInput = (name, value) => {
+      if (!inputByName.has(name)) {
+        throw new Error(`Unknown symbolic Cell input "${name}"`)
+      }
+      simTags[modbus.addrByName[name]] = value
+      modbus.io.writeSimTags(simTags)
+    }
+
+    const waitUntil = async (label, predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        const snap = snapshot()
+        if (predicate(snap)) return snap
+        await sleep(intervalMs)
+      }
+      const last = snapshot()
+      throw new Error(
+        `Timed out after ${timeoutMs}ms waiting for ${label} (outputs=${JSON.stringify(last.outputs)}, inputs=${JSON.stringify(last.inputs)})`,
+      )
+    }
+
+    return {
+      contract,
+      setInput,
+      snapshot,
+      waitUntil,
+      dispose,
+    }
+  } catch (err) {
+    await dispose()
+    throw err
+  }
+}
+
+/**
  * Create a live, contract-driven Conveyor Cell verification harness owning:
  * - contract-derived OIP Modbus TCP server
  * - OIP SimWorld real-time stepping
