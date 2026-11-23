@@ -1,6 +1,6 @@
 PROGRAM TracerBullet
   VAR
-    PhotoEye AT %IX0.0 : BOOL;
+    PhotoEye AT %IX0.4 : BOOL;
     Conveyor_Run AT %QX0.0 : BOOL;
   END_VAR
 

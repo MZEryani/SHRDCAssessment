@@ -125,7 +125,7 @@ describe('Tracer Bullet: OpenPLC v4 (Docker Master) <-> OIP Modbus TCP Server', 
     if (modbus) await modbus.close()
   })
 
-  it('reads %IX0.0 (PhotoEye) from Modbus server and drives %QX0.0 (Conveyor_Run) end-to-end', async () => {
+  it('reads %IX0.4 (PhotoEye) from Modbus server and drives %QX0.0 (Conveyor_Run) end-to-end', async () => {
     modbus = await startModbusServer({ host: '0.0.0.0', port: MODBUS_PORT })
 
     const deployed = await deployProgram({
@@ -137,25 +137,25 @@ describe('Tracer Bullet: OpenPLC v4 (Docker Master) <-> OIP Modbus TCP Server', 
     client = deployed.client
     assert.equal(deployed.compilationStatus, 'SUCCESS')
 
-    // PhotoEye clear (%IX0.0 = 0) => Conveyor_Run ON (%QX0.0 = 1)
-    modbus.discreteInputs[0] = false
+    // PhotoEye clear (%IX0.4 = 0) => Conveyor_Run ON (%QX0.0 = 1)
+    modbus.discreteInputs[4] = false
     await waitFor(() => modbus.stats.fc2Reads > 0 && modbus.stats.coilWrites > 0 && modbus.coils[0] === true, {
       timeoutMs: 8000,
-      label: 'Conveyor_Run (%QX0.0) to turn ON when PhotoEye (%IX0.0) is clear',
+      label: 'Conveyor_Run (%QX0.0) to turn ON when PhotoEye (%IX0.4) is clear',
     })
 
-    // Box blocks PhotoEye (%IX0.0 = 1) => Conveyor_Run OFF (%QX0.0 = 0)
-    modbus.discreteInputs[0] = true
+    // Box blocks PhotoEye (%IX0.4 = 1) => Conveyor_Run OFF (%QX0.0 = 0)
+    modbus.discreteInputs[4] = true
     await waitFor(() => modbus.coils[0] === false, {
       timeoutMs: 3000,
-      label: 'Conveyor_Run (%QX0.0) to turn OFF when PhotoEye (%IX0.0) is blocked',
+      label: 'Conveyor_Run (%QX0.0) to turn OFF when PhotoEye (%IX0.4) is blocked',
     })
 
-    // Box clears PhotoEye (%IX0.0 = 0) => Conveyor_Run ON (%QX0.0 = 1)
-    modbus.discreteInputs[0] = false
+    // Box clears PhotoEye (%IX0.4 = 0) => Conveyor_Run ON (%QX0.0 = 1)
+    modbus.discreteInputs[4] = false
     await waitFor(() => modbus.coils[0] === true, {
       timeoutMs: 3000,
-      label: 'Conveyor_Run (%QX0.0) to turn back ON when PhotoEye (%IX0.0) clears',
+      label: 'Conveyor_Run (%QX0.0) to turn back ON when PhotoEye (%IX0.4) clears',
     })
   })
 })

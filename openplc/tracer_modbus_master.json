@@ -12,8 +12,8 @@
       "io_points": [
         {
           "fc": 2,
-          "offset": "0",
-          "iec_location": "%IX0.0",
+          "offset": "4",
+          "iec_location": "%IX0.4",
           "len": 1,
           "cycle_time_ms": 50
         },

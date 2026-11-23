@@ -325,3 +325,23 @@ describe('OIP validation CLI conformance gate', () => {
     assert.equal(oipCalled, true)
   })
 })
+
+describe('Tracer artifacts I/O Contract alignment', () => {
+  it('aligns tracer_bullet.st and tracer_modbus_master.json with canonical PhotoEye (%IX0.4) and Conveyor_Run (%QX0.0)', () => {
+    const { contract } = loadBaseline()
+    const tracerSt = readFileSync(join(REPO_ROOT, 'openplc', 'tracer_bullet.st'), 'utf8')
+    const tracerModbus = JSON.parse(
+      readFileSync(join(REPO_ROOT, 'openplc', 'tracer_modbus_master.json'), 'utf8'),
+    )
+
+    const tracerContract = {
+      ...contract,
+      signals: contract.signals.filter((s) => s.name === 'PhotoEye' || s.name === 'Conveyor_Run'),
+    }
+
+    assert.match(tracerSt, /PhotoEye\s+AT\s+%IX0\.4\s*:\s*BOOL\s*;/)
+    assert.doesNotMatch(tracerSt, /PhotoEye\s+AT\s+%IX0\.0\b/)
+    assert.match(tracerSt, /Conveyor_Run\s+AT\s+%QX0\.0\s*:\s*BOOL\s*;/)
+    assert.deepEqual(tracerModbus, deriveModbusMaster(tracerContract))
+  })
+})
