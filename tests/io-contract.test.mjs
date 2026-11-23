@@ -6,6 +6,7 @@ import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { checkConformance, deriveModbusMaster } from '../scripts/io-contract.mjs'
 import { validateOipCell } from '../scripts/validate-oip-cell.mjs'
+import { deriveBoxLengthFromScene } from './lib/cell-harness.mjs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -343,5 +344,16 @@ describe('Tracer artifacts I/O Contract alignment', () => {
     assert.doesNotMatch(tracerSt, /PhotoEye\s+AT\s+%IX0\.0\b/)
     assert.match(tracerSt, /Conveyor_Run\s+AT\s+%QX0\.0\s*:\s*BOOL\s*;/)
     assert.deepEqual(tracerModbus, deriveModbusMaster(tracerContract))
+  })
+})
+
+describe('Cell Harness geometry derivation', () => {
+  it('derives box length from the scene spawner parameters instead of a hard-coded constant', () => {
+    const { contract, scene } = loadBaseline()
+    assert.equal(deriveBoxLengthFromScene(scene, contract), 0.4)
+
+    const resizedScene = structuredClone(scene)
+    resizedScene.parts.find((p) => p.id === 'spawner_1').params.length = 0.65
+    assert.equal(deriveBoxLengthFromScene(resizedScene, contract), 0.65)
   })
 })
