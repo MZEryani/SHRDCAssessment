@@ -1,0 +1,12 @@
+{
+  "name": "shrdc-assessment",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenPLC v4 + Open Industry Project Conveyor Cell integration and OpenCode multi-agent workflow",
+  "scripts": {
+    "plc:deploy": "node scripts/openplc-deploy.mjs",
+    "oip:desktop": "OIP_DESKTOP_PROD=1 npx --prefix Open-Industry-Project/apps/desktop electron Open-Industry-Project/apps/desktop",
+    "test:tracer": "node --test tests/tracer-modbus.test.mjs"
+  }
+}

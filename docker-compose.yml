@@ -5,6 +5,8 @@ services:
     ports:
       - "8443:8443"
       - "502:502"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     cap_add:
       - SYS_NICE
       - SYS_RESOURCE

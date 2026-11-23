@@ -1,6 +1,9 @@
 # Upstream simulator repo (cloned locally, kept separate from this repo)
 Open-Industry-Project/
 
+# Local downloaded tool binaries (e.g., STruCpp)
+.tools/
+
 # OS / Editor
 .DS_Store
 *.swp
