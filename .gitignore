@@ -1,0 +1,12 @@
+# Upstream simulator repo (cloned locally, kept separate from this repo)
+Open-Industry-Project/
+
+# OS / Editor
+.DS_Store
+*.swp
+.vscode/
+
+# Dependencies & Logs
+node_modules/
+__pycache__/
+*.log
