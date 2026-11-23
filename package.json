@@ -11,6 +11,7 @@
     "oip:validate": "node scripts/validate-oip-cell.mjs",
     "oip:desktop": "OIP_DESKTOP_PROD=1 npx --prefix Open-Industry-Project/apps/desktop electron Open-Industry-Project/apps/desktop scenes/conveyor-cell",
     "test:tracer": "node --test tests/tracer-modbus.test.mjs",
-    "test:e2e": "node --test tests/conveyor-cell-e2e.test.mjs"
+    "test:e2e": "node --test tests/conveyor-cell-e2e.test.mjs",
+    "test:opencode": "node --test tests/opencode-config.test.mjs"
   }
 }
