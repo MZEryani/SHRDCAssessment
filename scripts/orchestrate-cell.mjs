@@ -38,8 +38,11 @@ export const WORKER_SPECS = [
 
 function extractWorktreeFromSkillPart(part) {
   const skillDir = part?.state?.metadata?.metadata?.directory
-  if (typeof skillDir === 'string' && skillDir.includes('/.opencode/skills/')) {
-    return skillDir.split('/.opencode/skills/')[0]
+  if (typeof skillDir === 'string') {
+    const normalized = skillDir.replaceAll('\\', '/')
+    if (normalized.includes('/.opencode/skills/')) {
+      return normalized.split('/.opencode/skills/')[0]
+    }
   }
   return null
 }
@@ -398,18 +401,20 @@ export async function runOrchestration({
     }
 
     // Link gitignored local toolchains into the merged integration worktree so all gates run against merged code
+    const symlinkType = process.platform === 'win32' ? 'junction' : 'dir'
     for (const dir of ['.tools', 'Open-Industry-Project']) {
       const src = join(REPO_ROOT, dir)
       const dst = join(merge.integrationWorktreePath, dir)
       if (existsSync(src) && !existsSync(dst)) {
-        symlinkSync(src, dst)
+        symlinkSync(src, dst, symlinkType)
       }
     }
 
     console.log(`[orchestrate:${runId}] Stage 4: Running verification gates on merged integration worktree...`)
-    const plcTest = runGate('plc:test', 'npm', ['run', 'plc:test'], merge.integrationWorktreePath)
-    const oipValidate = runGate('oip:validate', 'npm', ['run', 'oip:validate'], merge.integrationWorktreePath)
-    const e2eModbus = runGate('test:e2e', 'npm', ['run', 'test:e2e'], merge.integrationWorktreePath)
+    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+    const plcTest = runGate('plc:test', npmCmd, ['run', 'plc:test'], merge.integrationWorktreePath)
+    const oipValidate = runGate('oip:validate', npmCmd, ['run', 'oip:validate'], merge.integrationWorktreePath)
+    const e2eModbus = runGate('test:e2e', npmCmd, ['run', 'test:e2e'], merge.integrationWorktreePath)
 
     verification = { plcTest, oipValidate, e2eModbus }
     if (!plcTest.passed || !oipValidate.passed || !e2eModbus.passed) {

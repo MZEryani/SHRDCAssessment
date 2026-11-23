@@ -1,13 +1,13 @@
 # SHRDC Assessment: OpenPLC v4 + OIP Conveyor Cell & OpenCode Multi-Agent Workflow
 
-Reproducible macOS integration of **OpenPLC Runtime v4** (Docker, `STruC++`) driving a 3D **Open Industry Project (OIP)** Photo-Eye-Gated Conveyor **Cell** over Modbus TCP, paired with an executable **OpenCode** multi-agent workflow using progressive-disclosure skills, tiered Gemini models, and parallel `git worktree` isolation.
+Cross-platform (**macOS, Linux, and Windows**) integration of **OpenPLC Runtime v4** (Docker, `STruC++`) driving a 3D **Open Industry Project (OIP)** Photo-Eye-Gated Conveyor **Cell** over Modbus TCP, paired with an executable **OpenCode** multi-agent workflow using progressive-disclosure skills, tiered Gemini models, and parallel `git worktree` isolation. *(Built and verified end-to-end on macOS; all scripts use pure-Node cross-platform helpers with zero external `zip` or POSIX shell dependencies.)*
 
 ## Architecture at a Glance
 
 ```mermaid
 flowchart LR
   subgraph Task1["Task 1: Live PLC <-> 3D Cell"]
-    PLC["OpenPLC Runtime v4\n(Docker, STruC++ Master)\nREST :8443"] -->|"Modbus TCP FC2/15/16\nhost.docker.internal:5020"| OIP["OIP 3D Conveyor Cell\n(macOS Desktop / Headless SimWorld)\nModbus TCP Server :5020"]
+    PLC["OpenPLC Runtime v4\n(Docker, STruC++ Master)\nREST :8443"] -->|"Modbus TCP FC2/15/16\nhost.docker.internal:5020"| OIP["OIP 3D Conveyor Cell\n(Host Desktop / Headless SimWorld)\nModbus TCP Server :5020"]
     Contract["Canonical I/O Contract\nopenplc/io-contract.json"] -.-> PLC
     Contract -.-> OIP
   end
@@ -31,9 +31,9 @@ flowchart LR
 - **Canonical I/O Contract & Process Spec:** [openplc/io-contract.json](openplc/io-contract.json), [docs/cell-process-spec.md](docs/cell-process-spec.md)
 - **Captured Task 2 Execution Proof:** [docs/orchestration-proof.md](docs/orchestration-proof.md) ([JSON trace](docs/orchestration-proof.json))
 
-## Prerequisites (macOS)
+## Prerequisites (macOS, Linux, Windows)
 
-1. **Docker Desktop** running locally (for `openplc-runtime`).
+1. **Docker** running locally (Docker Desktop on macOS/Windows, or Docker Engine on Linux). `docker-compose.yml` includes `extra_hosts: ["host.docker.internal:host-gateway"]` so Docker reaches the host's `:5020` Modbus TCP server on all platforms. On Linux, ensure your host firewall allows Docker bridge traffic to TCP port `5020`.
 2. **Node.js `>=24`** (verified on `v26.13.1`).
 3. **Open Industry Project** cloned and built at `./Open-Industry-Project` (gitignored):
    ```bash
@@ -42,7 +42,7 @@ flowchart LR
    npm --prefix Open-Industry-Project run build
    npm --prefix Open-Industry-Project/apps/desktop install
    ```
-4. **STruC++ CLI** (`Autonomy-Logic/STruCpp` macOS release archive) unpacked at `.tools/strucpp/strucpp/strucpp` (gitignored) for local scan-cycle unit tests and Runtime v4.1+ `program.zip` packaging.
+4. **STruC++ CLI** unpacked at `.tools/strucpp/strucpp/` (gitignored) from the matching [`Autonomy-Logic/STruCpp`](https://github.com/Autonomy-Logic/STruCpp/releases) release archive (`strucpp-darwin-arm64.tar.gz`, `strucpp-linux-x64.tar.gz`, `strucpp-linux-arm64.tar.gz`, or `strucpp-win32-x64.zip`). Scripts automatically resolve `strucpp.exe` on Windows and `strucpp` on macOS/Linux, and package `program.zip` in pure Node without an external `zip` binary.
 5. **OpenCode CLI** (`v2.4+`) with provider credentials stored outside git (`opencode auth list --standalone`). Local `.env`, `.env.*`, `.opencode/auth*`, `*.key`, and `*.pem` files are ignored via `.gitignore`.
 6. **Start OpenPLC Runtime v4 (Docker):**
    ```bash
@@ -66,7 +66,7 @@ npm run verify:all
 | `npm run test:tracer` | Single-signal OpenPLC v4 ↔ OIP Modbus TCP tracer loop |
 | `npm run test:e2e` | Live OpenPLC v4 Docker ↔ OIP `SimWorld` 5-box Batch + anti-touching spacing E2E |
 
-## Live macOS OpenPLC + OIP Desktop 3D Demo Walkthrough
+## Live OpenPLC + OIP Desktop 3D Demo Walkthrough
 
 1. **Ensure OpenPLC Runtime v4 is running and deploy the Cell PLC program:**
    ```bash

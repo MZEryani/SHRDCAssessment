@@ -43,11 +43,12 @@ if (canonicalSt !== sceneSt) {
 console.log('✓ ST parity verified: scenes/conveyor-cell/plc/program.st matches openplc/conveyor_cell.st')
 
 // 3. Run OIP's own strict CLI validators
+const NPM_CMD = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 for (const script of [
   ['run', 'validate-project', '--', CELL_DIR, '--strict'],
   ['run', 'check-st', '--', CELL_DIR],
   ['run', 'check-wiring', '--', CELL_DIR, '--strict'],
   ['run', 'check-layout', '--', CELL_DIR, '--strict'],
 ]) {
-  execFileSync('npm', script, { cwd: OIP_DIR, stdio: 'inherit' })
+  execFileSync(NPM_CMD, script, { cwd: OIP_DIR, stdio: 'inherit' })
 }

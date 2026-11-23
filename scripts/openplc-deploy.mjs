@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request as httpsRequest } from 'node:https'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { crc32, deflateRawSync } from 'node:zlib'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DEFAULT_STRUCPP_DIR = join(REPO_ROOT, '.tools', 'strucpp', 'strucpp')
@@ -155,11 +156,94 @@ export class OpenPlcClient {
   }
 }
 
+export function resolveStrucppBin(strucppDir = DEFAULT_STRUCPP_DIR) {
+  return join(strucppDir, process.platform === 'win32' ? 'strucpp.exe' : 'strucpp')
+}
+
+function collectFiles(dir, rootDir = dir) {
+  const entries = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      entries.push(...collectFiles(fullPath, rootDir))
+    } else if (entry.isFile()) {
+      entries.push({
+        name: relative(rootDir, fullPath).replaceAll('\\', '/'),
+        data: readFileSync(fullPath),
+      })
+    }
+  }
+  return entries
+}
+
+function createZipBuffer(rootDir) {
+  const files = collectFiles(rootDir)
+  const localChunks = []
+  const centralChunks = []
+  let offset = 0
+
+  for (const { name, data } of files) {
+    const nameBuf = Buffer.from(name, 'utf8')
+    const compressed = deflateRawSync(data)
+    const crc = crc32(data) >>> 0
+
+    const localHeader = Buffer.alloc(30)
+    localHeader.writeUInt32LE(0x04034b50, 0)
+    localHeader.writeUInt16LE(20, 4)
+    localHeader.writeUInt16LE(0, 6)
+    localHeader.writeUInt16LE(8, 8) // deflate
+    localHeader.writeUInt16LE(0, 10)
+    localHeader.writeUInt16LE(0, 12)
+    localHeader.writeUInt32LE(crc, 14)
+    localHeader.writeUInt32LE(compressed.length, 18)
+    localHeader.writeUInt32LE(data.length, 22)
+    localHeader.writeUInt16LE(nameBuf.length, 26)
+    localHeader.writeUInt16LE(0, 28)
+
+    localChunks.push(localHeader, nameBuf, compressed)
+
+    const centralHeader = Buffer.alloc(46)
+    centralHeader.writeUInt32LE(0x02014b50, 0)
+    centralHeader.writeUInt16LE(20, 4)
+    centralHeader.writeUInt16LE(20, 6)
+    centralHeader.writeUInt16LE(0, 8)
+    centralHeader.writeUInt16LE(8, 10) // deflate
+    centralHeader.writeUInt16LE(0, 12)
+    centralHeader.writeUInt16LE(0, 14)
+    centralHeader.writeUInt32LE(crc, 16)
+    centralHeader.writeUInt32LE(compressed.length, 20)
+    centralHeader.writeUInt32LE(data.length, 24)
+    centralHeader.writeUInt16LE(nameBuf.length, 28)
+    centralHeader.writeUInt16LE(0, 30)
+    centralHeader.writeUInt16LE(0, 32)
+    centralHeader.writeUInt16LE(0, 34)
+    centralHeader.writeUInt16LE(0, 36)
+    centralHeader.writeUInt32LE(0, 38)
+    centralHeader.writeUInt32LE(offset, 42)
+
+    centralChunks.push(centralHeader, nameBuf)
+    offset += localHeader.length + nameBuf.length + compressed.length
+  }
+
+  const centralSize = centralChunks.reduce((sum, buf) => sum + buf.length, 0)
+  const eocd = Buffer.alloc(22)
+  eocd.writeUInt32LE(0x06054b50, 0)
+  eocd.writeUInt16LE(0, 4)
+  eocd.writeUInt16LE(0, 6)
+  eocd.writeUInt16LE(files.length, 8)
+  eocd.writeUInt16LE(files.length, 10)
+  eocd.writeUInt32LE(centralSize, 12)
+  eocd.writeUInt32LE(offset, 16)
+  eocd.writeUInt16LE(0, 20)
+
+  return Buffer.concat([...localChunks, ...centralChunks, eocd])
+}
+
 /**
  * Compile an IEC 61131-3 .st file with STruC++ and package a Runtime v4 program.zip buffer.
  */
 export function buildProgramZip({ stPath, modbusMasterPath, strucppDir = DEFAULT_STRUCPP_DIR }) {
-  const strucppBin = join(strucppDir, 'strucpp')
+  const strucppBin = resolveStrucppBin(strucppDir)
   const runtimeIncSrc = join(strucppDir, 'runtime', 'include')
   if (!existsSync(strucppBin)) {
     throw new Error(`STruC++ binary not found at ${strucppBin}`)
@@ -173,7 +257,6 @@ export function buildProgramZip({ stPath, modbusMasterPath, strucppDir = DEFAULT
 
   const workDir = mkdtempSync(join(tmpdir(), 'openplc-bundle-'))
   const bundleDir = join(workDir, 'bundle')
-  const zipPath = join(workDir, 'program.zip')
 
   try {
     cpSync(runtimeIncSrc, join(bundleDir, 'strucpp_runtime', 'include'), { recursive: true })
@@ -209,8 +292,7 @@ export function buildProgramZip({ stPath, modbusMasterPath, strucppDir = DEFAULT
       cpSync(resolve(modbusMasterPath), join(bundleDir, 'conf', 'modbus_master.json'))
     }
 
-    execFileSync('zip', ['-rq', zipPath, '.'], { cwd: bundleDir, stdio: 'pipe' })
-    return { zipBuffer: readFileSync(zipPath), md5 }
+    return { zipBuffer: createZipBuffer(bundleDir), md5 }
   } finally {
     rmSync(workDir, { recursive: true, force: true })
   }

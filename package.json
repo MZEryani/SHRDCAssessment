@@ -7,9 +7,9 @@
   "scripts": {
     "plc:deploy": "node scripts/openplc-deploy.mjs",
     "plc:deploy:cell": "node scripts/openplc-deploy.mjs openplc/conveyor_cell.st openplc/conveyor_cell_modbus_master.json",
-    "plc:test": ".tools/strucpp/strucpp/strucpp openplc/conveyor_cell.st --test tests/conveyor_cell.test.st",
+    "plc:test": "node scripts/plc-test.mjs",
     "oip:validate": "node scripts/validate-oip-cell.mjs",
-    "oip:desktop": "OIP_DESKTOP_PROD=1 npx --prefix Open-Industry-Project/apps/desktop electron Open-Industry-Project/apps/desktop scenes/conveyor-cell",
+    "oip:desktop": "node scripts/oip-desktop.mjs",
     "test:tracer": "node --test tests/tracer-modbus.test.mjs",
     "test:e2e": "node --test tests/conveyor-cell-e2e.test.mjs",
     "test:opencode": "node --test tests/opencode-config.test.mjs",
