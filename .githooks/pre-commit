@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+set -e
+
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
+echo "[pre-commit] Running offline verification guardrail (npm run verify:offline)..."
+npm run verify:offline

@@ -6,9 +6,16 @@ import { dirname, join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import {
+  inspectNdjsonRetryLine,
   mergeWorkerBranches,
   parseOpenCodeNdjson,
 } from '../scripts/orchestrate-cell.mjs'
+import {
+  createInitialState,
+  transition,
+} from '../scripts/orchestration-machine.mjs'
+import { EventEmitter } from 'node:events'
+import { probeModelPair, probeSingleModel } from '../scripts/opencode-probe.mjs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -140,5 +147,174 @@ describe('Parallel git worktree orchestration pipeline', () => {
     assert.equal(proof.verification.plcTest.passed, true)
     assert.equal(proof.verification.oipValidate.passed, true)
     assert.equal(proof.verification.e2eModbus.passed, true)
+  })
+
+  it('enforces legal orchestration state transitions, bounded repairs, and zero leaked worktrees', () => {
+    let state = createInitialState({ maxWorkerSelfHeals: 2, maxPostMergeRepairs: 1 })
+    state = transition(state, { type: 'START_PREFLIGHT' })
+    state = transition(state, {
+      type: 'PREFLIGHT_RESOLVED',
+      orchestratorModel: 'google/gemini-4-neon',
+      workerModel: 'google/gemini-3.8-flash',
+      fallbackUsed: false,
+    })
+    assert.equal(state.phase, 'stage1_orchestrator')
+
+    state = transition(state, { type: 'ORCHESTRATOR_DONE' })
+    assert.equal(state.phase, 'stage2_workers')
+    assert.equal(state.leakedWorktrees, 3)
+
+    // Illegal early merge while workers are still running must be rejected
+    state = transition(state, { type: 'WORKER_SUCCEED', worker: 'plc-coder' })
+    const illegal = transition(state, { type: 'MERGE_CLEAN' })
+    assert.equal(illegal.lastRejected, true)
+    assert.equal(illegal.phase, 'stage2_workers')
+
+    // Complete remaining workers and merge cleanly
+    state = transition(state, { type: 'WORKER_SUCCEED', worker: 'oip-builder' })
+    state = transition(state, { type: 'WORKER_SUCCEED', worker: 'test-engineer' })
+    assert.equal(state.phase, 'stage3_merge')
+
+    state = transition(state, { type: 'MERGE_CLEAN' })
+    assert.equal(state.phase, 'stage4_verify')
+    assert.equal(state.leakedWorktrees, 4)
+
+    // First post-merge failure triggers repair pass; second exhausts budget and cleans up all worktrees
+    state = transition(state, { type: 'GATE_FAIL_REPAIR' })
+    assert.equal(state.phase, 'stage4_repair')
+    assert.equal(state.repairAttempts, 1)
+
+    state = transition(state, { type: 'REPAIR_PATCH_APPLIED' })
+    assert.equal(state.phase, 'stage4_verify')
+
+    state = transition(state, { type: 'GATE_FAIL_REPAIR' })
+    assert.equal(state.phase, 'failed')
+    assert.equal(state.leakedWorktrees, 0)
+
+    // Happy-path done, worker API abort, and merge conflict all guarantee zero leaked worktrees
+    let doneState = createInitialState()
+    doneState = transition(doneState, { type: 'START_PREFLIGHT' })
+    doneState = transition(doneState, {
+      type: 'PREFLIGHT_RESOLVED',
+      orchestratorModel: 'google/gemini-4-neon',
+      workerModel: 'google/gemini-3.8-flash',
+    })
+    doneState = transition(doneState, { type: 'ORCHESTRATOR_DONE' })
+    const aborted = transition(doneState, { type: 'WORKER_API_ABORT', worker: 'oip-builder' })
+    assert.equal(aborted.phase, 'failed')
+    assert.equal(aborted.leakedWorktrees, 0)
+
+    doneState = transition(doneState, { type: 'WORKER_SUCCEED', worker: 'plc-coder' })
+    doneState = transition(doneState, { type: 'WORKER_SUCCEED', worker: 'oip-builder' })
+    doneState = transition(doneState, { type: 'WORKER_SUCCEED', worker: 'test-engineer' })
+    const conflicted = transition(doneState, { type: 'MERGE_CONFLICT', conflicts: 1 })
+    assert.equal(conflicted.phase, 'failed')
+    assert.equal(conflicted.leakedWorktrees, 0)
+
+    doneState = transition(doneState, { type: 'MERGE_CLEAN' })
+    doneState = transition(doneState, { type: 'GATES_ALL_PASS' })
+    assert.equal(doneState.phase, 'done')
+    assert.equal(doneState.leakedWorktrees, 0)
+  })
+
+  it('aborts probeSingleModel on hard timeout with SIGTERM and handles split NDJSON chunks', async () => {
+    let killedSignal = null
+    const hangingSpawn = () => {
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter()
+      child.stderr = new EventEmitter()
+      child.killed = false
+      child.kill = (sig) => {
+        killedSignal = sig
+        child.killed = true
+      }
+      return child
+    }
+
+    const timedOut = await probeSingleModel('google/gemini-3.8-flash', {
+      timeoutMs: 40,
+      spawnFn: hangingSpawn,
+    })
+    assert.equal(timedOut.ok, false)
+    assert.match(timedOut.reason, /Timed out after 40ms/)
+    assert.equal(killedSignal, 'SIGTERM')
+
+    // Verify chunk-split NDJSON retry event still triggers fail-fast abort
+    let chunkChild
+    const chunkSpawn = () => {
+      chunkChild = new EventEmitter()
+      chunkChild.stdout = new EventEmitter()
+      chunkChild.stderr = new EventEmitter()
+      chunkChild.killed = false
+      chunkChild.kill = () => {
+        chunkChild.killed = true
+      }
+      queueMicrotask(() => {
+        const line = JSON.stringify({
+          type: 'retry',
+          attempt: 2,
+          error: { status: 503, message: 'high demand' },
+        })
+        chunkChild.stdout.emit('data', Buffer.from(line.slice(0, 20)))
+        chunkChild.stdout.emit('data', Buffer.from(`${line.slice(20)}\n`))
+      })
+      return chunkChild
+    }
+
+    const aborted = await probeSingleModel('google/gemini-3.8-flash', {
+      timeoutMs: 2000,
+      spawnFn: chunkSpawn,
+    })
+    assert.equal(aborted.ok, false)
+    assert.match(aborted.reason, /503/)
+  })
+
+  it('probes prioritized model candidates with fallback and fails cleanly when none are live', async () => {
+    const responses = {
+      'google/gemini-4-neon': { ok: true, durationMs: 420 },
+      'google/gemini-3.8-flash': { ok: false, reason: 'HTTP 503 UNAVAILABLE', durationMs: 12000 },
+      'google/gemini-3-flash-preview': { ok: true, durationMs: 650 },
+    }
+    const stubProbe = async (model) => responses[model] ?? { ok: false, reason: '404', durationMs: 100 }
+
+    const resolved = await probeModelPair({
+      orchestratorCandidates: ['google/gemini-4-neon'],
+      workerCandidates: ['google/gemini-3.8-flash', 'google/gemini-3-flash-preview'],
+      probeFn: stubProbe,
+    })
+    assert.equal(resolved.ok, true)
+    assert.equal(resolved.orchestratorModel, 'google/gemini-4-neon')
+    assert.equal(resolved.workerModel, 'google/gemini-3-flash-preview')
+    assert.equal(resolved.fallbackUsed, true)
+
+    const exhausted = await probeModelPair({
+      orchestratorCandidates: ['google/gemini-4-neon'],
+      workerCandidates: ['google/gemini-3.8-flash'],
+      probeFn: async () => ({ ok: false, reason: 'HTTP 429 limit: 0', durationMs: 250 }),
+    })
+    assert.equal(exhausted.ok, false)
+    assert.equal(exhausted.attempts.length >= 1, true)
+  })
+
+  it('flags fail-fast abort on repeated 429/503 NDJSON retry events past attempt 2', () => {
+    const attempt2 = JSON.stringify({
+      type: 'retry',
+      attempt: 2,
+      error: { status: 503, message: 'high demand' },
+    })
+    const attempt3 = JSON.stringify({
+      type: 'retry',
+      attempt: 3,
+      error: { status: 503, message: 'high demand' },
+    })
+    const quota429 = JSON.stringify({
+      type: 'retry',
+      attempt: 3,
+      error: { status: 429, message: 'RESOURCE_EXHAUSTED' },
+    })
+
+    assert.equal(inspectNdjsonRetryLine(attempt2, { maxRetryAttempts: 2 }), null)
+    assert.match(inspectNdjsonRetryLine(attempt3, { maxRetryAttempts: 2 }), /503/)
+    assert.match(inspectNdjsonRetryLine(quota429, { maxRetryAttempts: 2 }), /429/)
   })
 })

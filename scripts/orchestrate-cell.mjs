@@ -4,6 +4,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  createLineSplitter,
+  inspectNdjsonRetryLine,
+  probeModelPair,
+} from './opencode-probe.mjs'
+import { createInitialState, transition } from './orchestration-machine.mjs'
+
+export { inspectNdjsonRetryLine }
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -127,7 +135,35 @@ export function parseOpenCodeNdjson(rawOutput) {
   }
 }
 
-function runOpenCodeAsync({ agent, model, worktreeName, prompt, cwd = REPO_ROOT }) {
+function listWorktreePaths(repoRoot) {
+  const out = execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], {
+    encoding: 'utf8',
+  })
+  return new Set(
+    out
+      .split('\n')
+      .filter((l) => l.startsWith('worktree '))
+      .map((l) => l.slice('worktree '.length).trim()),
+  )
+}
+
+function stepMachine(machine, event) {
+  const next = transition(machine, event)
+  if (next.lastRejected) {
+    throw new Error(`Orchestration state machine rejected ${event.type}: ${next.lastMessage}`)
+  }
+  return next
+}
+
+function runOpenCodeAsync({
+  agent,
+  model,
+  worktreeName,
+  prompt,
+  cwd = REPO_ROOT,
+  timeoutMs = 240000,
+  maxRetryAttempts = 2,
+}) {
   return new Promise((resolvePromise, reject) => {
     const args = ['run', '--standalone', '--auto', '--archived', '--format', 'json', '--agent', agent]
     if (worktreeName) args.push('--worktree', worktreeName)
@@ -139,18 +175,45 @@ function runOpenCodeAsync({ agent, model, worktreeName, prompt, cwd = REPO_ROOT 
     const child = spawn('opencode', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
+    let abortedReason = null
+
+    const abortRun = (reason) => {
+      if (abortedReason) return
+      abortedReason = reason
+      if (!child.killed) child.kill('SIGTERM')
+    }
+
+    const timer = setTimeout(() => {
+      abortRun(`Agent "${agent}" timed out after ${timeoutMs}ms`)
+    }, timeoutMs)
+
+    const splitter = createLineSplitter((line) => {
+      const retryAbort = inspectNdjsonRetryLine(line, { maxRetryAttempts })
+      if (retryAbort) abortRun(`Agent "${agent}" ${retryAbort}`)
+    })
 
     child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString('utf8')
+      const text = chunk.toString('utf8')
+      stdout += text
+      splitter.push(text)
     })
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString('utf8')
     })
-    child.on('error', reject)
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      reject(err)
+    })
     child.on('close', (code) => {
+      clearTimeout(timer)
+      splitter.flush()
       const finishedAt = new Date().toISOString()
       const durationMs = Math.round(performance.now() - startMs)
       const parsed = parseOpenCodeNdjson(`${stderr}\n${stdout}`)
+      if (abortedReason) {
+        reject(new Error(abortedReason))
+        return
+      }
       if (code !== 0 || parsed.error) {
         reject(
           new Error(
@@ -329,26 +392,63 @@ export async function runOrchestration({
   specPath = 'docs/cell-process-spec.md',
   orchestratorModel,
   workerModel,
+  usePreflight = false,
 } = {}) {
   const defaults = resolveDefaultModels()
-  const resolvedOrchestratorModel = orchestratorModel ?? defaults.orchestrator
-  const resolvedWorkerModel = workerModel ?? defaults.worker
+  let resolvedOrchestratorModel = orchestratorModel ?? defaults.orchestrator
+  let resolvedWorkerModel = workerModel ?? defaults.worker
+  let fallbackUsed = false
+
+  let machine = createInitialState()
+  machine = stepMachine(machine, { type: 'START_PREFLIGHT' })
+
+  if (usePreflight) {
+    const probed = await probeModelPair()
+    if (!probed.ok) {
+      machine = stepMachine(machine, { type: 'PREFLIGHT_FAILED', reason: 'No live-callable model pair available.' })
+      throw new Error(`Model preflight failed: ${JSON.stringify(probed.attempts)}`)
+    }
+    resolvedOrchestratorModel = orchestratorModel ?? probed.orchestratorModel
+    resolvedWorkerModel = workerModel ?? probed.workerModel
+    fallbackUsed = probed.fallbackUsed
+  }
+
+  machine = stepMachine(machine, {
+    type: 'PREFLIGHT_RESOLVED',
+    orchestratorModel: resolvedOrchestratorModel,
+    workerModel: resolvedWorkerModel,
+    fallbackUsed,
+  })
   const runId = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
 
   const specText = readFileSync(join(REPO_ROOT, specPath), 'utf8')
   const contract = JSON.parse(readFileSync(join(REPO_ROOT, 'openplc', 'io-contract.json'), 'utf8'))
 
   console.log(`[orchestrate:${runId}] Stage 1: Orchestrator (${resolvedOrchestratorModel}) reviewing spec & I/O Contract...`)
-  const orchestrator = await runOpenCodeAsync({
-    agent: 'orchestrator',
-    model: resolvedOrchestratorModel,
-    prompt: [
-      `Read ${specPath} and openplc/io-contract.json.`,
-      `Confirm that all ${contract.signals.length} signals in openplc/io-contract.json cover the plain-English specification below and emit a 3-bullet dispatch brief (one bullet each for plc-coder, oip-builder, and test-engineer). Do not edit files.`,
-      '',
-      specText,
-    ].join('\n'),
-  })
+  let orchestrator
+  try {
+    orchestrator = await runOpenCodeAsync({
+      agent: 'orchestrator',
+      model: resolvedOrchestratorModel,
+      prompt: [
+        `Read ${specPath} and openplc/io-contract.json.`,
+        `Confirm that all ${contract.signals.length} signals in openplc/io-contract.json cover the plain-English specification below and emit a 3-bullet dispatch brief (one bullet each for plc-coder, oip-builder, and test-engineer). Do not edit files.`,
+        '',
+        specText,
+      ].join('\n'),
+    })
+  } catch (err) {
+    machine = stepMachine(machine, { type: 'ORCHESTRATOR_FAILED', reason: err.message })
+    throw err
+  }
+  machine = stepMachine(machine, { type: 'ORCHESTRATOR_DONE' })
+
+  const preStage2Worktrees = listWorktreePaths(REPO_ROOT)
+  const cleanupNewWorktrees = () => {
+    const current = listWorktreePaths(REPO_ROOT)
+    const created = [...current].filter((p) => !preStage2Worktrees.has(p))
+    if (created.length > 0) removeWorktrees(REPO_ROOT, created)
+  }
 
   console.log(`[orchestrate:${runId}] Stage 2: Dispatching 3 parallel workers (${resolvedWorkerModel}) in isolated git worktrees...`)
   const workerSettled = await Promise.allSettled(
@@ -368,37 +468,52 @@ export async function runOrchestration({
     ),
   )
 
-  const failedWorker = workerSettled.find((r) => r.status === 'rejected')
-  if (failedWorker) {
-    removeWorktrees(
-      REPO_ROOT,
-      workerSettled
-        .filter((r) => r.status === 'fulfilled')
-        .map((r) => r.value.worktreePath),
-    )
-    throw failedWorker.reason
+  const failedIdx = workerSettled.findIndex((r) => r.status === 'rejected')
+  if (failedIdx >= 0) {
+    cleanupNewWorktrees()
+    machine = stepMachine(machine, {
+      type: 'WORKER_API_ABORT',
+      worker: WORKER_SPECS[failedIdx].agent,
+      reason: workerSettled[failedIdx].reason?.message,
+    })
+    throw workerSettled[failedIdx].reason
   }
 
   const workerResults = workerSettled.map((r) => r.value)
-
   for (const w of workerResults) {
     if (!w.worktreePath) {
+      cleanupNewWorktrees()
+      machine = stepMachine(machine, {
+        type: 'WORKER_API_ABORT',
+        worker: w.agent,
+        reason: `Worker "${w.agent}" did not report an isolated git worktree path`,
+      })
       throw new Error(`Worker "${w.agent}" did not report an isolated git worktree path`)
     }
+    machine = stepMachine(machine, { type: 'WORKER_SUCCEED', worker: w.agent })
   }
 
   console.log(`[orchestrate:${runId}] Stage 3: Merging 3 worker worktree branches into integration branch...`)
-  const merge = mergeWorkerBranches({
-    repoRoot: REPO_ROOT,
-    runId,
-    workers: workerResults.map((w) => ({ name: w.agent, worktreePath: w.worktreePath })),
-  })
+  let merge
+  try {
+    merge = mergeWorkerBranches({
+      repoRoot: REPO_ROOT,
+      runId,
+      workers: workerResults.map((w) => ({ name: w.agent, worktreePath: w.worktreePath })),
+    })
+  } catch (err) {
+    cleanupNewWorktrees()
+    machine = stepMachine(machine, { type: 'MERGE_CONFLICT', conflicts: 1 })
+    throw err
+  }
 
   let verification
   try {
     if (merge.conflicts > 0) {
+      machine = stepMachine(machine, { type: 'MERGE_CONFLICT', conflicts: merge.conflicts })
       throw new Error(`Merge produced ${merge.conflicts} conflict(s)`)
     }
+    machine = stepMachine(machine, { type: 'MERGE_CLEAN' })
 
     // Link gitignored local toolchains into the merged integration worktree so all gates run against merged code
     const symlinkType = process.platform === 'win32' ? 'junction' : 'dir'
@@ -418,12 +533,22 @@ export async function runOrchestration({
 
     verification = { plcTest, oipValidate, e2eModbus }
     if (!plcTest.passed || !oipValidate.passed || !e2eModbus.passed) {
+      machine = stepMachine(machine, {
+        type: 'GATE_FAIL_REPAIR',
+        gates: {
+          plcTest: plcTest.passed ? 'pass' : 'fail',
+          oipValidate: oipValidate.passed ? 'pass' : 'fail',
+          e2eModbus: e2eModbus.passed ? 'pass' : 'fail',
+        },
+      })
       throw new Error(
         `Verification gate failed: plc=${plcTest.passed}, oip=${oipValidate.passed}, e2e=${e2eModbus.passed}`,
       )
     }
+    machine = stepMachine(machine, { type: 'GATES_ALL_PASS' })
   } finally {
     merge.cleanup()
+    cleanupNewWorktrees()
   }
 
   const latestStart = Math.max(...workerResults.map((w) => Date.parse(w.startedAt)))
@@ -470,6 +595,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     specPath: getFlag('--spec') ?? 'docs/cell-process-spec.md',
     orchestratorModel: getFlag('--orchestrator-model'),
     workerModel: getFlag('--worker-model'),
+    usePreflight: args.includes('--preflight'),
   }).catch((err) => {
     console.error(err instanceof Error ? err.message : err)
     process.exit(1)

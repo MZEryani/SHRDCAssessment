@@ -20,3 +20,9 @@ Disclosed reference for [`plc-oip-verify`](SKILL.md). Consult when writing or de
 
 - Container `openplc-runtime` (`ghcr.io/autonomy-logic/openplc-runtime:latest`) must be running with port `8443` published and `--add-host=host.docker.internal:host-gateway`.
 - Override endpoints via environment variables (`OPENPLC_URL`, `OPENPLC_USER`, `OPENPLC_PASSWORD`, `OIP_MODBUS_PORT`) outside git; never commit `.env` files.
+
+## OpenCode Model Tiers (Catalog vs. Live-Callable)
+
+- `opencode models --standalone` lists the static provider catalog, not live API-key entitlement or current capacity. Always run `npm run opencode:probe` (hard 12s per-model timeout) before a live orchestration run to resolve a live-callable pair.
+- **Paid-tier defaults:** Orchestrator `google/gemini-4-neon` (fallback `google/gemini-3.1-pro-preview`), Workers `google/gemini-3.8-flash` (fallback `google/gemini-3-flash-preview`).
+- **Free-tier fallback pair:** Orchestrator `google/gemini-3-flash-preview`, Workers `google/gemini-flash-lite-latest` (`15 RPM` cap; Pro/Gemini-4 models have `limit: 0` on Free Tier).
