@@ -4,6 +4,9 @@ Open-Industry-Project/
 # Local downloaded tool binaries (e.g., STruCpp)
 .tools/
 
+# Local untracked scratch artifacts (prototypes, architecture review HTMLs)
+.scratch/
+
 # OS / Editor
 .DS_Store
 *.swp
