@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { checkConformance, deriveModbusMaster } from '../scripts/io-contract.mjs'
+import { validateOipCell } from '../scripts/validate-oip-cell.mjs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -204,5 +206,122 @@ describe('I/O Contract conformance checks', () => {
     assert.equal(unexpectedProblems.length, 1)
     assert.equal(unexpectedProblems[0].artifact, 'scene.json')
     assert.match(unexpectedProblems[0].message, /%QW99.*despawner_1\.countTag/)
+  })
+})
+
+function makeTempCellFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'oip-validate-fixture-'))
+  mkdirSync(join(root, 'openplc'), { recursive: true })
+  mkdirSync(join(root, 'scenes', 'conveyor-cell', 'plc'), { recursive: true })
+  for (const rel of [
+    join('openplc', 'io-contract.json'),
+    join('openplc', 'conveyor_cell.st'),
+    join('openplc', 'conveyor_cell_modbus_master.json'),
+    join('scenes', 'conveyor-cell', 'scene.json'),
+    join('scenes', 'conveyor-cell', 'plc', 'program.st'),
+  ]) {
+    cpSync(join(REPO_ROOT, rel), join(root, rel))
+  }
+  return root
+}
+
+function runWithFixture(mutate) {
+  const fixtureRoot = makeTempCellFixture()
+  try {
+    mutate(fixtureRoot)
+    let oipCalled = false
+    const errors = []
+    const result = validateOipCell({
+      repoRoot: fixtureRoot,
+      runOipValidators: () => {
+        oipCalled = true
+      },
+      log: () => {},
+      error: (msg) => errors.push(msg),
+    })
+    return { result, oipCalled, errors }
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true })
+  }
+}
+
+describe('OIP validation CLI conformance gate', () => {
+  it('fails with a role-mismatch message before invoking OIP validators when belt and spawner tags are swapped', () => {
+    const { result, oipCalled, errors } = runWithFixture((fixtureRoot) => {
+      const scenePath = join(fixtureRoot, 'scenes', 'conveyor-cell', 'scene.json')
+      const scene = JSON.parse(readFileSync(scenePath, 'utf8'))
+      const belt = scene.parts.find((p) => p.id === 'belt_1')
+      const spawner = scene.parts.find((p) => p.id === 'spawner_1')
+      ;[belt.params.runTag, spawner.params.runTag] = [spawner.params.runTag, belt.params.runTag]
+      writeFileSync(scenePath, JSON.stringify(scene, null, 2), 'utf8')
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(oipCalled, false, 'OIP CLI validators must not run when conformance fails')
+    assert.match(errors.join('\n'), /\[scene\.json\].*Role mismatch on belt_1\.runTag/)
+    assert.match(errors.join('\n'), /\[scene\.json\].*Role mismatch on spawner_1\.runTag/)
+  })
+
+  it('fails before invoking OIP validators on ST AT drift, ST constant drift, Modbus io_points drift, or ST parity drift', () => {
+    const mutations = [
+      {
+        label: 'ST AT address drift',
+        mutate: (root) => {
+          const stPath = join(root, 'openplc', 'conveyor_cell.st')
+          const src = readFileSync(stPath, 'utf8').replace('PhotoEye       AT %IX0.4', 'PhotoEye       AT %IX0.5')
+          writeFileSync(stPath, src, 'utf8')
+        },
+        expectedPattern: /\[conveyor_cell\.st\].*PhotoEye.*%IX0\.5/,
+      },
+      {
+        label: 'ST Batch constant drift',
+        mutate: (root) => {
+          const stPath = join(root, 'openplc', 'conveyor_cell.st')
+          const src = readFileSync(stPath, 'utf8').replace('BATCH_TARGET        : INT  := 5;', 'BATCH_TARGET        : INT  := 7;')
+          writeFileSync(stPath, src, 'utf8')
+        },
+        expectedPattern: /\[conveyor_cell\.st\].*BATCH_TARGET.*7.*5/,
+      },
+      {
+        label: 'Modbus io_points drift',
+        mutate: (root) => {
+          const mbPath = join(root, 'openplc', 'conveyor_cell_modbus_master.json')
+          const cfg = JSON.parse(readFileSync(mbPath, 'utf8'))
+          cfg[0].config.io_points[0].len = 4
+          writeFileSync(mbPath, JSON.stringify(cfg, null, 2), 'utf8')
+        },
+        expectedPattern: /\[modbus_master\.json\].*io_points/,
+      },
+      {
+        label: 'ST parity drift',
+        mutate: (root) => {
+          const sceneStPath = join(root, 'scenes', 'conveyor-cell', 'plc', 'program.st')
+          writeFileSync(sceneStPath, `${readFileSync(sceneStPath, 'utf8')}\n(* drifted *)\n`, 'utf8')
+        },
+        expectedPattern: /ST drift detected/,
+      },
+    ]
+
+    for (const { label, mutate, expectedPattern } of mutations) {
+      const { result, oipCalled, errors } = runWithFixture(mutate)
+      assert.equal(result.ok, false, `Expected failure for ${label}`)
+      assert.equal(oipCalled, false, `OIP CLI validators must not run for ${label}`)
+      assert.match(errors.join('\n'), expectedPattern, `Unexpected output for ${label}: ${errors.join('\n')}`)
+    }
+  })
+
+  it('invokes OIP validators and succeeds on the clean repository baseline', () => {
+    let oipCalled = false
+    const result = validateOipCell({
+      repoRoot: REPO_ROOT,
+      runOipValidators: () => {
+        oipCalled = true
+      },
+      log: () => {},
+      error: () => {},
+    })
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.problems, [])
+    assert.equal(oipCalled, true)
   })
 })
