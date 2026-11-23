@@ -10,3 +10,8 @@ Open-Industry-Project/
 node_modules/
 __pycache__/
 *.log
+
+# Local secrets & environment variables (never commit)
+.env
+.env.*
+!.env.example
