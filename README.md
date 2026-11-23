@@ -59,12 +59,15 @@ npm run verify:all
 
 | Command | Seam Verified |
 | :--- | :--- |
+| `npm run verify:offline` | Fast offline guardrail (`test:contract`, `plc:test`, `oip:validate`, `test:opencode`, `test:orchestrate`) |
+| `npm run test:contract` | Canonical `I/O Contract` schema & conformance across ST, Modbus master, and OIP scene |
 | `npm run plc:test` | 7/7 `STruC++` scan-cycle tests (`tests/conveyor_cell.test.st`) |
 | `npm run oip:validate` | 11/11 `I/O Contract` match, ST parity, and OIP strict project/ST/wiring/layout checks |
 | `npm run test:opencode` | `opencode debug config` / `agents` discovery, progressive-disclosure skills, `.gitignore` rules |
-| `npm run test:orchestrate` | NDJSON trace parsing, 3-way `git worktree` merge, and captured proof invariants |
+| `npm run test:orchestrate` | NDJSON trace parsing, state-machine/preflight guards, 3-way `git worktree` merge, and proof invariants |
 | `npm run test:tracer` | Single-signal OpenPLC v4 ↔ OIP Modbus TCP tracer loop |
 | `npm run test:e2e` | Live OpenPLC v4 Docker ↔ OIP `SimWorld` 5-box Batch + anti-touching spacing E2E |
+| `npm run hooks:install` | Enable local `.githooks/pre-commit` offline guardrail |
 
 ## Live OpenPLC + OIP Desktop 3D Demo Walkthrough
 
@@ -95,26 +98,27 @@ npm run verify:all
 
 ## Task 2: OpenCode Multi-Agent Parallel `git worktree` Workflow
 
-Inspect discovered agents and configuration sources:
+Inspect discovered agents, configuration sources, and live-callable model tiers:
 
 ```bash
 opencode debug config --standalone
 opencode debug agents --standalone
+npm run opencode:probe
 ```
 
 Execute the end-to-end orchestration pipeline from [docs/cell-process-spec.md](docs/cell-process-spec.md):
 
 ```bash
-# Uses the configured agent models (google/gemini-4-neon + google/gemini-3.8-flash)
-npm run orchestrate
+# Paid-tier greenfield generation in isolated worktrees (leaves main untouched)
+npm run orchestrate -- --preflight --from-scratch
 
-# Or override models for Gemini API Free Tier accounts
+# Or fast verification mode against existing artifacts (with optional Free Tier model overrides)
 npm run orchestrate -- \
   --orchestrator-model google/gemini-3-flash-preview \
   --worker-model google/gemini-flash-lite-latest
 ```
 
-The pipeline runs the Orchestrator to produce a dispatch brief, launches `plc-coder` (`openplc-st`), `oip-builder` (`oip-scene`), and `test-engineer` (`plc-oip-verify`) concurrently in isolated OpenCode `--worktree` directories, merges their branches cleanly into an integration worktree, executes `plc:test`, `oip:validate`, and live `test:e2e` on the merged tree, cleans up temporary worktrees, and writes updated proof to [docs/orchestration-proof.md](docs/orchestration-proof.md) and [docs/orchestration-proof.json](docs/orchestration-proof.json).
+In `--from-scratch` mode, the pipeline probes live-callable models, creates a clean isolated base worktree (leaving `main` untouched), runs the frontier Orchestrator to synthesize `openplc/io-contract.json` and a dispatch brief, launches `plc-coder` (`openplc-st`), `oip-builder` (`oip-scene`), and `test-engineer` (`plc-oip-verify`) concurrently in isolated OpenCode `--worktree` directories with in-worktree self-healing, merges their disjoint branches cleanly into an integration worktree (`0` conflicts), runs `test:contract`, `plc:test`, `oip:validate`, and live `test:e2e` (with a bounded Orchestrator post-merge repair pass if needed), cleans up all temporary worktrees/branches, and writes updated proof to [docs/orchestration-proof.md](docs/orchestration-proof.md) and [docs/orchestration-proof.json](docs/orchestration-proof.json).
 
 ## Repository Layout
 

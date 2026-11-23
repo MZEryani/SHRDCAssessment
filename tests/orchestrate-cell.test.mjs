@@ -6,9 +6,11 @@ import { dirname, join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import {
+  GREENFIELD_FILES,
   inspectNdjsonRetryLine,
   mergeWorkerBranches,
   parseOpenCodeNdjson,
+  prepareGreenfieldBase,
 } from '../scripts/orchestrate-cell.mjs'
 import {
   createInitialState,
@@ -141,9 +143,17 @@ describe('Parallel git worktree orchestration pipeline', () => {
       'Expected all three workers to execute concurrently with overlapping wall-clock windows',
     )
 
-    // Verify clean merge and passing gates
+    // Verify clean merge, real greenfield diffs, and passing gates
+    assert.equal(proof.mode, 'from-scratch')
     assert.equal(proof.merge.conflicts, 0)
     assert.equal(proof.merge.mergedBranches.length, 3)
+    for (const branch of proof.merge.mergedBranches) {
+      assert.ok(
+        Array.isArray(branch.filesChanged) && branch.filesChanged.length > 0,
+        `Expected worker "${branch.worker}" to produce real changed files`,
+      )
+    }
+    assert.equal(proof.verification.contractTest?.passed, true)
     assert.equal(proof.verification.plcTest.passed, true)
     assert.equal(proof.verification.oipValidate.passed, true)
     assert.equal(proof.verification.e2eModbus.passed, true)
@@ -316,5 +326,66 @@ describe('Parallel git worktree orchestration pipeline', () => {
     assert.equal(inspectNdjsonRetryLine(attempt2, { maxRetryAttempts: 2 }), null)
     assert.match(inspectNdjsonRetryLine(attempt3, { maxRetryAttempts: 2 }), /503/)
     assert.match(inspectNdjsonRetryLine(quota429, { maxRetryAttempts: 2 }), /429/)
+  })
+
+  it('prepares an isolated greenfield base worktree without mutating main and merges worker diffs cleanly', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'orchestrate-greenfield-test-'))
+    const repoDir = join(tempDir, 'repo')
+    try {
+      execFileSync('git', ['init', '-b', 'main', repoDir], { stdio: 'pipe' })
+      execFileSync('git', ['-C', repoDir, 'config', 'user.email', 'test@example.com'])
+      execFileSync('git', ['-C', repoDir, 'config', 'user.name', 'Test User'])
+      writeFileSync(join(repoDir, 'README.md'), '# baseline\n')
+      writeFileSync(join(repoDir, 'contract.json'), '{"baseline":true}\n')
+      writeFileSync(join(repoDir, 'plc.st'), 'PROGRAM Main END_PROGRAM\n')
+      execFileSync('git', ['-C', repoDir, 'add', '.'])
+      execFileSync('git', ['-C', repoDir, 'commit', '-m', 'init'])
+
+      const base = prepareGreenfieldBase({
+        repoRoot: repoDir,
+        runId: 'gf-test',
+        stripFiles: ['contract.json', 'plc.st'],
+      })
+
+      try {
+        // Main repo still has original files untouched
+        assert.equal(existsSync(join(repoDir, 'contract.json')), true)
+        assert.equal(existsSync(join(repoDir, 'plc.st')), true)
+        // Base worktree has stripped files removed
+        assert.equal(existsSync(join(base.baseWorktreePath, 'contract.json')), false)
+        assert.equal(existsSync(join(base.baseWorktreePath, 'plc.st')), false)
+        assert.equal(existsSync(join(base.baseWorktreePath, 'README.md')), true)
+        assert.ok(GREENFIELD_FILES.includes('openplc/conveyor_cell.st'))
+
+        // Simulate worker branched from main authoring plc.st and merging cleanly onto greenfield base
+        const workerWt = join(tempDir, 'wt-plc')
+        execFileSync('git', ['-C', repoDir, 'worktree', 'add', '--detach', workerWt, 'HEAD'], {
+          stdio: 'pipe',
+        })
+        writeFileSync(join(workerWt, 'plc.st'), 'PROGRAM Generated END_PROGRAM\n')
+
+        const merged = mergeWorkerBranches({
+          repoRoot: repoDir,
+          runId: 'gf-test',
+          baseRef: base.baseBranch,
+          workers: [{ name: 'plc-coder', worktreePath: workerWt, ownedFiles: ['plc.st'] }],
+        })
+        try {
+          assert.equal(merged.conflicts, 0)
+          assert.deepEqual(merged.mergedBranches[0].filesChanged, ['plc.st'])
+          assert.equal(
+            readFileSync(join(merged.integrationWorktreePath, 'plc.st'), 'utf8'),
+            'PROGRAM Generated END_PROGRAM\n',
+          )
+        } finally {
+          merged.cleanup()
+        }
+      } finally {
+        base.cleanup()
+      }
+      assert.equal(existsSync(base.baseWorktreePath), false)
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
   })
 })

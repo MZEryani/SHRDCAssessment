@@ -1,32 +1,36 @@
 # OpenCode Parallel `git worktree` Orchestration Proof
 
-- **Run ID:** `20261123133719`
-- **Captured At:** `2026-11-23T13:41:18.143Z`
+- **Run ID:** `20261123170916`
+- **Mode:** `from-scratch`
+- **Captured At:** `2026-11-23T17:19:03.609Z`
 - **Process Spec:** `docs/cell-process-spec.md`
 - **Canonical I/O Contract:** `openplc/io-contract.json`
-- **Tiered Models:** Orchestrator `google/gemini-3-flash-preview` vs. 3 parallel workers `google/gemini-flash-lite-latest`
-- **Parallel Window Overlap:** `4231 ms` (all 3 workers active concurrently)
-- **Integration Branch:** `orchestrate/20261123133719/integration` (`0` merge conflicts)
+- **Tiered Models:** Orchestrator `google/gemini-3.1-pro-preview` vs. 3 parallel workers `google/gemini-3.8-flash`
+- **Parallel Window Overlap:** `113108 ms` (all 3 workers active concurrently)
+- **Integration Branch:** `orchestrate/20261123170916/integration` (`0` merge conflicts)
+- **Post-Merge Repair Passes:** `1`
 
-## Tiered Model, Skill Scoping & Cost Breakdown
+## Tiered Model, Skill Scoping, Tool Calls & Cost Breakdown
 
-| Agent | Model | Skills Loaded | Worktree | Wall Time | Tokens | Cost (USD) |
-| :--- | :--- | :--- | :--- | ---: | :--- | ---: |
-| `orchestrator` | `google/gemini-3-flash-preview` | (coordinator) | repo root | 165.1s | 20020 in / 744 think / 346 out | $0.01409 |
-| `plc-coder` | `google/gemini-flash-lite-latest` | openplc-st | `/Users/majd/.local/share/opencode/worktree/70d59e/quick-cabin` | 4.6s | 11803 in / 0 think / 174 out | $0.00434 |
-| `oip-builder` | `google/gemini-flash-lite-latest` | oip-scene | `/Users/majd/.local/share/opencode/worktree/70d59e/crisp-eagle` | 20.1s | 11174 in / 0 think / 160 out | $0.00412 |
-| `test-engineer` | `google/gemini-flash-lite-latest` | plc-oip-verify | `/Users/majd/.local/share/opencode/worktree/70d59e/brave-tiger` | 4.2s | 13356 in / 0 think / 183 out | $0.00477 |
+| Agent | Model | Skills Loaded | Tools Used | Worktree | Wall Time | Tokens | Cost (USD) |
+| :--- | :--- | :--- | :--- | :--- | ---: | :--- | ---: |
+| `orchestrator` | `google/gemini-3.1-pro-preview` | (coordinator) | read:1, write:1 | base/integration worktree | 36.9s | 18360 in / 2767 think / 1443 out | $0.09232 |
+| `plc-coder` | `google/gemini-3.8-flash` | openplc-st | skill:1, read:13, shell:12, glob:1, write:1 | `/Users/majd/.local/share/opencode/worktree/70d59e/mighty-cactus` | 139.3s | 84793 in / 4949 think / 2857 out | $0.14883 |
+| `oip-builder` | `google/gemini-3.8-flash` | oip-scene | skill:1, read:6, shell:12, write:1 | `/Users/majd/.local/share/opencode/worktree/70d59e/quiet-squid` | 113.1s | 61039 in / 4690 think / 1851 out | $0.09320 |
+| `test-engineer` | `google/gemini-3.8-flash` | plc-oip-verify | skill:1, read:11, glob:1, shell:8, grep:1, write:1 | `/Users/majd/.local/share/opencode/worktree/70d59e/brave-squid` | 135.7s | 71989 in / 3720 think / 4558 out | $0.11702 |
+| `orchestrator (repair)` | `google/gemini-3.1-pro-preview` | (coordinator) | shell:17 | base/integration worktree | 326.5s | 57103 in / 3533 think / 1539 out | $0.23418 |
 
 ## Isolated Worktree Branches Merged Cleanly
 
-| Worker | Worktree Branch | Worker Commit | Merge Commit |
-| :--- | :--- | :--- | :--- |
-| `plc-coder` | `orchestrate/20261123133719/plc-coder` | `a035ffd` | `69339e8` |
-| `oip-builder` | `orchestrate/20261123133719/oip-builder` | `79faec8` | `b8fc414` |
-| `test-engineer` | `orchestrate/20261123133719/test-engineer` | `9c11219` | `92e912e` |
+| Worker | Worktree Branch | Worker Commit | Merge Commit | Files Changed |
+| :--- | :--- | :--- | :--- | :--- |
+| `plc-coder` | `orchestrate/20261123170916/plc-coder` | `983db1f` | `c97cfc4` | `openplc/conveyor_cell.st`, `openplc/conveyor_cell_modbus_master.json`, `scenes/conveyor-cell/plc/program.st` |
+| `oip-builder` | `orchestrate/20261123170916/oip-builder` | `7b113d7` | `39a3d85` | `scenes/conveyor-cell/scene.json` |
+| `test-engineer` | `orchestrate/20261123170916/test-engineer` | `94efc17` | `355307b` | `tests/conveyor_cell.test.st` |
 
 ## Post-Merge Verification Gates (Executed on Merged Integration Worktree)
 
-- **STruC++ PLC Unit Tests (`npm run plc:test`):** PASS (1.7s)
-- **OIP Strict Validators (`npm run oip:validate`):** PASS (3.5s)
-- **Live OpenPLC v4 <-> OIP Modbus TCP E2E (`npm run test:e2e`):** PASS (47.3s)
+- **I/O Contract Conformance (`npm run test:contract`):** PASS (0.3s)
+- **STruC++ PLC Unit Tests (`npm run plc:test`):** PASS (1.8s)
+- **OIP Strict Validators (`npm run oip:validate`):** PASS (3.3s)
+- **Live OpenPLC v4 <-> OIP Modbus TCP E2E (`npm run test:e2e`):** PASS (64.8s)
