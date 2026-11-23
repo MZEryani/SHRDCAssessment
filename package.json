@@ -14,6 +14,7 @@
     "test:e2e": "node --test tests/conveyor-cell-e2e.test.mjs",
     "test:opencode": "node --test tests/opencode-config.test.mjs",
     "test:orchestrate": "node --test tests/orchestrate-cell.test.mjs",
-    "orchestrate": "node scripts/orchestrate-cell.mjs"
+    "orchestrate": "node scripts/orchestrate-cell.mjs",
+    "verify:all": "npm run plc:test && npm run oip:validate && npm run test:opencode && npm run test:orchestrate && npm run test:tracer && npm run test:e2e"
   }
 }
