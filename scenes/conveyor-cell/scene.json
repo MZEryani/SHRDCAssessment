@@ -1,0 +1,168 @@
+{
+  "version": 4,
+  "parts": [
+    {
+      "id": "belt_1",
+      "type": "part",
+      "packageId": "oip.belt-conveyor",
+      "position": [
+        0.085,
+        0.8,
+        0
+      ],
+      "rotationY": 0,
+      "params": {
+        "fpmUnits": false,
+        "segments": [
+          [
+            5,
+            0
+          ]
+        ],
+        "width": 0.8,
+        "standHeight": 0.8,
+        "speed": 0.5,
+        "runTag": "%QX0.0"
+      }
+    },
+    {
+      "id": "spawner_1",
+      "type": "part",
+      "packageId": "oip.box-spawner",
+      "position": [
+        0.35,
+        1.25,
+        0
+      ],
+      "rotationY": 0,
+      "params": {
+        "boxesPerMinute": 12,
+        "length": 0.4,
+        "keepSpacing": true,
+        "runTag": "%QX0.1",
+        "conveyorId": "belt_1",
+        "release": "enable"
+      }
+    },
+    {
+      "id": "photoeye_1",
+      "type": "part",
+      "packageId": "oip.diffuse-sensor",
+      "position": [
+        2,
+        0.78,
+        0.457
+      ],
+      "rotationY": 3.141593,
+      "params": {
+        "tag": "%IX0.4",
+        "maxRange": 0.84
+      }
+    },
+    {
+      "id": "start_pb",
+      "type": "part",
+      "packageId": "oip.push-button",
+      "position": [
+        0.5,
+        0.8,
+        -0.43
+      ],
+      "rotationY": 3.141593,
+      "params": {
+        "text": "START",
+        "buttonColor": "#16a34a",
+        "lampSource": "tag",
+        "tag": "%IX0.0",
+        "lampTag": "%QX0.2"
+      },
+      "parent": "belt_1"
+    },
+    {
+      "id": "stop_pb",
+      "type": "part",
+      "packageId": "oip.push-button",
+      "position": [
+        0.9,
+        0.8,
+        -0.43
+      ],
+      "rotationY": 3.141593,
+      "params": {
+        "buttonColor": "#d97706",
+        "lampSource": "tag",
+        "tag": "%IX0.1",
+        "lampTag": "%QX0.3"
+      },
+      "parent": "belt_1"
+    },
+    {
+      "id": "estop_pb",
+      "type": "part",
+      "packageId": "oip.push-button",
+      "position": [
+        1.3,
+        0.8,
+        -0.43
+      ],
+      "rotationY": 3.141593,
+      "params": {
+        "emergencyStop": true,
+        "text": "E-STOP",
+        "buttonColor": "#dc2626",
+        "momentary": false,
+        "lampSource": "tag",
+        "tag": "%IX0.2",
+        "lampTag": "%QX0.4"
+      },
+      "parent": "belt_1"
+    },
+    {
+      "id": "reset_pb",
+      "type": "part",
+      "packageId": "oip.push-button",
+      "position": [
+        1.7,
+        0.8,
+        -0.43
+      ],
+      "rotationY": 3.141593,
+      "params": {
+        "text": "RESET",
+        "buttonColor": "#2563eb",
+        "tag": "%IX0.3"
+      },
+      "parent": "belt_1"
+    },
+    {
+      "id": "despawner_1",
+      "type": "part",
+      "packageId": "oip.despawner",
+      "position": [
+        6.17,
+        0,
+        0
+      ],
+      "rotationY": 0,
+      "params": {
+        "length": 1.2,
+        "width": 1.2,
+        "countTag": ""
+      }
+    },
+    {
+      "id": "batch_indicator",
+      "type": "part",
+      "packageId": "oip.stack-light",
+      "position": [
+        2.1,
+        0,
+        -0.6
+      ],
+      "rotationY": 0,
+      "params": {
+        "tag": "%QW0"
+      }
+    }
+  ]
+}

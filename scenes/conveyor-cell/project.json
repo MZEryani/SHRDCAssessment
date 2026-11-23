@@ -1,0 +1,18 @@
+{
+  "version": 7,
+  "name": "conveyor-cell",
+  "scene": "scene.json",
+  "packages": [
+    "parts/oip.belt-conveyor",
+    "parts/oip.box-spawner",
+    "parts/oip.box",
+    "parts/oip.diffuse-sensor",
+    "parts/oip.push-button",
+    "parts/oip.despawner",
+    "parts/oip.stack-light"
+  ],
+  "program": [
+    "plc/program.st"
+  ],
+  "tests": []
+}

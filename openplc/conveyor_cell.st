@@ -150,7 +150,8 @@ PROGRAM ConveyorCellMain
     Dwell_Light    AT %QX0.3 : BOOL;
     Fault_Light    AT %QX0.4 : BOOL;
     Box_Count      AT %QW0   : INT;
-
+  END_VAR
+  VAR
     Controller : ConveyorCellController;
   END_VAR
 
