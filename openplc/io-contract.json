@@ -1,0 +1,120 @@
+{
+  "name": "conveyor-cell",
+  "version": "1.0.0",
+  "modbus": {
+    "topology": "oip-server-openplc-master",
+    "oipHostForPlc": "host.docker.internal",
+    "port": 5020,
+    "slaveId": 1,
+    "cycleTimeMs": 50
+  },
+  "parameters": {
+    "scanIntervalMs": 20,
+    "inspectionDwellMs": 2000,
+    "batchTarget": 5,
+    "spawnPulseMs": 500,
+    "spawnCooldownMs": 5000,
+    "jamTimeoutMs": 4000
+  },
+  "signals": [
+    {
+      "name": "Start_PB",
+      "iecAddress": "%IX0.0",
+      "type": "BOOL",
+      "direction": "oip_to_plc",
+      "modbusArea": "discreteInput",
+      "modbusAddress": 0,
+      "description": "Momentary Start push button (TRUE = pressed)"
+    },
+    {
+      "name": "Stop_PB",
+      "iecAddress": "%IX0.1",
+      "type": "BOOL",
+      "direction": "oip_to_plc",
+      "modbusArea": "discreteInput",
+      "modbusAddress": 1,
+      "description": "Momentary Stop push button (TRUE = pressed)"
+    },
+    {
+      "name": "EStop",
+      "iecAddress": "%IX0.2",
+      "type": "BOOL",
+      "direction": "oip_to_plc",
+      "modbusArea": "discreteInput",
+      "modbusAddress": 2,
+      "description": "Latched Emergency Stop interlock (TRUE = active/tripped)"
+    },
+    {
+      "name": "Reset_Count_PB",
+      "iecAddress": "%IX0.3",
+      "type": "BOOL",
+      "direction": "oip_to_plc",
+      "modbusArea": "discreteInput",
+      "modbusAddress": 3,
+      "description": "Momentary Reset button (resets Box_Count when stopped, clears Jam Fault when Photo-Eye is clear)"
+    },
+    {
+      "name": "PhotoEye",
+      "iecAddress": "%IX0.4",
+      "type": "BOOL",
+      "direction": "oip_to_plc",
+      "modbusArea": "discreteInput",
+      "modbusAddress": 4,
+      "description": "Photo-Eye mounted near conveyor discharge (TRUE = box detected)"
+    },
+    {
+      "name": "Conveyor_Run",
+      "iecAddress": "%QX0.0",
+      "type": "BOOL",
+      "direction": "plc_to_oip",
+      "modbusArea": "coil",
+      "modbusAddress": 0,
+      "description": "Conveyor drive motor command"
+    },
+    {
+      "name": "Spawner_Enable",
+      "iecAddress": "%QX0.1",
+      "type": "BOOL",
+      "direction": "plc_to_oip",
+      "modbusArea": "coil",
+      "modbusAddress": 1,
+      "description": "Box spawner enable command (inhibited when conveyor stopped/dwelling, gated by spawn cooldown)"
+    },
+    {
+      "name": "Run_Light",
+      "iecAddress": "%QX0.2",
+      "type": "BOOL",
+      "direction": "plc_to_oip",
+      "modbusArea": "coil",
+      "modbusAddress": 2,
+      "description": "Green indicator light illuminated while the Cell is running"
+    },
+    {
+      "name": "Dwell_Light",
+      "iecAddress": "%QX0.3",
+      "type": "BOOL",
+      "direction": "plc_to_oip",
+      "modbusArea": "coil",
+      "modbusAddress": 3,
+      "description": "Amber indicator light illuminated during the 2-second Inspection Dwell"
+    },
+    {
+      "name": "Fault_Light",
+      "iecAddress": "%QX0.4",
+      "type": "BOOL",
+      "direction": "plc_to_oip",
+      "modbusArea": "coil",
+      "modbusAddress": 4,
+      "description": "Red indicator light illuminated on E-Stop or Photo-Eye Jam Fault"
+    },
+    {
+      "name": "Box_Count",
+      "iecAddress": "%QW0",
+      "type": "INT",
+      "direction": "plc_to_oip",
+      "modbusArea": "holdingRegister",
+      "modbusAddress": 0,
+      "description": "Current Batch box count (0..5)"
+    }
+  ]
+}
