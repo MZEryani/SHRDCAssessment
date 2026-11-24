@@ -164,5 +164,13 @@
         "tag": "%QW0"
       }
     }
+  ],
+  "plcs": [
+    {
+      "name": "PLC1",
+      "runsOn": "plc",
+      "protocol": "serve",
+      "connect": true
+    }
   ]
 }
