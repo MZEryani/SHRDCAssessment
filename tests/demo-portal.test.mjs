@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { WS_CLOSE_LOCK_HELD } from '../portal/modbus-bridge.mjs'
+import { createModbusEdgeMirror, createModbusTcpParser } from '../portal/modbus-mirror.mjs'
 import { createDemoPortalServer } from '../portal/server.mjs'
 import { createSelfSignedCert } from './lib/loopback-tls.mjs'
 
@@ -1010,6 +1011,198 @@ describe('Demo Portal — Persistent Cell Lifecycle & Orchestration Proof API', 
         body: JSON.stringify({ prompt: 'A conveyor cell' }),
       })
       assert.equal(unconfiguredRes.status, 503)
+    } finally {
+      await portal.close()
+      oipStub.cleanup()
+    }
+  })
+})
+
+describe('Demo Portal — Decoupled Modbus TCP Edge Mirror & RBE Push', () => {
+  it('reassembles split and coalesced Modbus TCP MBAP frames cleanly', () => {
+    const parser = createModbusTcpParser()
+    const f1 = Buffer.from([0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x02, 0x00, 0x00, 0x00, 0x05])
+    const f2 = Buffer.from([0x00, 0x02, 0x00, 0x00, 0x00, 0x08, 0x01, 0x0f, 0x00, 0x00, 0x00, 0x04, 0x01, 0x05])
+
+    // Split f1 across 3 chunks and coalesce f2 onto the tail
+    assert.deepEqual(parser.push(f1.subarray(0, 4)), [])
+    assert.deepEqual(parser.push(f1.subarray(4, 9)), [])
+    const combined = Buffer.concat([f1.subarray(9), f2])
+    const frames = parser.push(combined)
+    assert.equal(frames.length, 2)
+    assert.deepEqual(frames[0], f1)
+    assert.deepEqual(frames[1], f2)
+  })
+
+  it('forwards first unseeded FC 2 read synchronously (fail-safe NC E-Stop), seeds cache, serves local replies, and pushes actuator writes on change or heartbeat', () => {
+    let fakeNow = 1000
+    const mirror = createModbusEdgeMirror({ heartbeatMs: 400, now: () => fakeNow })
+
+    // 1. First unseeded FC 2 read (5 discrete inputs starting at 0) -> forward synchronously + emit watch_inputs
+    const readReq1 = Buffer.from([0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x02, 0x00, 0x00, 0x00, 0x05])
+    const r1 = mirror.handlePlcFrame(readReq1)
+    assert.equal(r1.mode, 'forward')
+    assert.equal(r1.watchChanged, true)
+    assert.deepEqual(mirror.getWatchedRanges(), [{ unitId: 1, fc: 2, start: 0, qty: 5 }])
+
+    // Browser replies with NC E-Stop bit 2 = 1 (0x04)
+    const browserReply = Buffer.from([0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x01, 0x02, 0x01, 0x04])
+    mirror.observeBrowserReply(browserReply)
+
+    // 2. Subsequent FC 2 read answered locally in <1ms with updated txId and cached 0x04
+    const readReq2 = Buffer.from([0x00, 0x02, 0x00, 0x00, 0x00, 0x06, 0x01, 0x02, 0x00, 0x00, 0x00, 0x05])
+    const r2 = mirror.handlePlcFrame(readReq2)
+    assert.equal(r2.mode, 'reply')
+    assert.equal(r2.pushToBrowser, null)
+    assert.equal(r2.watchChanged, false)
+    assert.deepEqual(
+      r2.replyFrame,
+      Buffer.from([0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x01, 0x02, 0x01, 0x04]),
+    )
+
+    // 3. Browser pushes change-of-value input_update (Photo-Eye bit 3 trips -> 0x0c)
+    assert.equal(
+      mirror.applyBrowserInputUpdate({ fc: 2, start: 0, qty: 5, data: Buffer.from([0x0c]) }),
+      true,
+    )
+    const readReq3 = Buffer.from([0x00, 0x03, 0x00, 0x00, 0x00, 0x06, 0x01, 0x02, 0x00, 0x00, 0x00, 0x05])
+    const r3 = mirror.handlePlcFrame(readReq3)
+    assert.equal(r3.mode, 'reply')
+    assert.equal(r3.pushToBrowser, null)
+    assert.equal(r3.replyFrame.readUInt8(9), 0x0c)
+
+    // 4. First FC 15 write (4 coils = 0x01) -> immediate local ack + immediate push to browser
+    const writeReq1 = Buffer.from([
+      0x00, 0x04, 0x00, 0x00, 0x00, 0x08, 0x01, 0x0f, 0x00, 0x00, 0x00, 0x04, 0x01, 0x01,
+    ])
+    const w1 = mirror.handlePlcFrame(writeReq1)
+    assert.equal(w1.mode, 'reply')
+    assert.deepEqual(
+      w1.replyFrame,
+      Buffer.from([0x00, 0x04, 0x00, 0x00, 0x00, 0x06, 0x01, 0x0f, 0x00, 0x00, 0x00, 0x04]),
+    )
+    assert.deepEqual(w1.pushToBrowser, writeReq1)
+
+    // 5. Identical FC 15 write 50ms later -> local ack, suppressed over WAN (RBE)
+    fakeNow += 50
+    const writeReq2 = Buffer.from([
+      0x00, 0x05, 0x00, 0x00, 0x00, 0x08, 0x01, 0x0f, 0x00, 0x00, 0x00, 0x04, 0x01, 0x01,
+    ])
+    const w2 = mirror.handlePlcFrame(writeReq2)
+    assert.equal(w2.mode, 'reply')
+    assert.ok(w2.replyFrame)
+    assert.equal(w2.pushToBrowser, null)
+
+    // 6. Changed FC 15 write (motor stops: 0x00) 20ms later -> immediate local ack + immediate push
+    fakeNow += 20
+    const writeReq3 = Buffer.from([
+      0x00, 0x06, 0x00, 0x00, 0x00, 0x08, 0x01, 0x0f, 0x00, 0x00, 0x00, 0x04, 0x01, 0x00,
+    ])
+    const w3 = mirror.handlePlcFrame(writeReq3)
+    assert.equal(w3.mode, 'reply')
+    assert.ok(w3.replyFrame)
+    assert.deepEqual(w3.pushToBrowser, writeReq3)
+
+    // 7. Identical FC 15 write after 400ms -> heartbeat push to keep OIP POLL_TIMEOUT_MS green
+    fakeNow += 400
+    const writeReq4 = Buffer.from([
+      0x00, 0x07, 0x00, 0x00, 0x00, 0x08, 0x01, 0x0f, 0x00, 0x00, 0x00, 0x04, 0x01, 0x00,
+    ])
+    const w4 = mirror.handlePlcFrame(writeReq4)
+    assert.equal(w4.mode, 'reply')
+    assert.ok(w4.replyFrame)
+    assert.deepEqual(w4.pushToBrowser, writeReq4)
+  })
+
+  it('operates end-to-end over /ws/modbus with mirror:true, watch_inputs, input_update, and local fast replies', async () => {
+    const oipStub = createTempOipDist()
+    const portal = await createDemoPortalServer({
+      repoRoot: REPO_ROOT,
+      oipDistDir: oipStub.dir,
+      accessToken: TEST_TOKEN,
+      httpPort: 0,
+      modbusListenPort: 0,
+    })
+
+    try {
+      const cookie = await authenticate(portal)
+      const wsClient = await openTestWs(`ws://127.0.0.1:${portal.httpPort}/ws/modbus`, cookie)
+      await wsClient.nextJson() // bridge_ready
+
+      wsClient.sendJson({ type: 'listen', link: 0, host: '127.0.0.1', port: 5020, mirror: true })
+
+      const tcpMaster = new Socket()
+      await new Promise((r, rej) => {
+        tcpMaster.once('error', rej)
+        tcpMaster.connect(portal.modbusPort, '127.0.0.1', r)
+      })
+
+      const connOpen = await wsClient.nextJson()
+      assert.equal(connOpen.type, 'connection')
+      assert.equal(connOpen.open, true)
+      const connId = connOpen.id
+
+      // 1. First unseeded FC 2 read triggers watch_inputs + synchronous forward to browser
+      const fc2Req1 = Buffer.from([0x00, 0x10, 0x00, 0x00, 0x00, 0x06, 0x01, 0x02, 0x00, 0x00, 0x00, 0x05])
+      const tcpReply1Promise = new Promise((r) => tcpMaster.once('data', r))
+      tcpMaster.write(fc2Req1)
+
+      const watchMsg = await wsClient.nextJson()
+      assert.equal(watchMsg.type, 'watch_inputs')
+      assert.deepEqual(watchMsg.ranges, [{ unitId: 1, fc: 2, start: 0, qty: 5 }])
+
+      const forwardedReq = await wsClient.nextBinary()
+      assert.equal(forwardedReq.readUInt32BE(0), connId)
+      assert.deepEqual(forwardedReq.subarray(4), fc2Req1)
+
+      // Browser sends initial reply with E-Stop=1 (0x04)
+      const initialReply = Buffer.from([0x00, 0x10, 0x00, 0x00, 0x00, 0x04, 0x01, 0x02, 0x01, 0x04])
+      const wsReplyBuf = Buffer.allocUnsafe(4 + initialReply.length)
+      wsReplyBuf.writeUInt32BE(connId, 0)
+      initialReply.copy(wsReplyBuf, 4)
+      wsClient.sendBinary(wsReplyBuf)
+
+      assert.deepEqual(await tcpReply1Promise, initialReply)
+
+      // 2. Browser pushes a Photo-Eye change-of-value input_update (0x0c)
+      wsClient.sendJson({
+        type: 'input_update',
+        fc: 2,
+        start: 0,
+        qty: 5,
+        b64: Buffer.from([0x0c]).toString('base64'),
+      })
+      // Give the event loop a tick to process the WS text frame
+      await new Promise((r) => setTimeout(r, 20))
+
+      // 3. OpenPLC polls FC 2 again -> answered locally by demo-portal with 0x0c (no browser round-trip!)
+      const fc2Req2 = Buffer.from([0x00, 0x11, 0x00, 0x00, 0x00, 0x06, 0x01, 0x02, 0x00, 0x00, 0x00, 0x05])
+      const tcpReply2Promise = new Promise((r) => tcpMaster.once('data', r))
+      tcpMaster.write(fc2Req2)
+      const tcpReply2 = await tcpReply2Promise
+      assert.deepEqual(
+        tcpReply2,
+        Buffer.from([0x00, 0x11, 0x00, 0x00, 0x00, 0x04, 0x01, 0x02, 0x01, 0x0c]),
+      )
+
+      // 4. OpenPLC writes FC 15 (coils = 0x02) -> immediate local ack AND forwarded to browser
+      const fc15Req = Buffer.from([
+        0x00, 0x12, 0x00, 0x00, 0x00, 0x08, 0x01, 0x0f, 0x00, 0x00, 0x00, 0x04, 0x01, 0x02,
+      ])
+      const tcpWriteAckPromise = new Promise((r) => tcpMaster.once('data', r))
+      tcpMaster.write(fc15Req)
+      const tcpWriteAck = await tcpWriteAckPromise
+      assert.deepEqual(
+        tcpWriteAck,
+        Buffer.from([0x00, 0x12, 0x00, 0x00, 0x00, 0x06, 0x01, 0x0f, 0x00, 0x00, 0x00, 0x04]),
+      )
+      const pushedWrite = await wsClient.nextBinary()
+      assert.equal(pushedWrite.readUInt32BE(0), connId)
+      assert.deepEqual(pushedWrite.subarray(4), fc15Req)
+
+      tcpMaster.destroy()
+      wsClient.close()
+      await wsClient.waitClose()
     } finally {
       await portal.close()
       oipStub.cleanup()

@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { createServer as createTcpServer } from 'node:net'
+import { createModbusEdgeMirror, createModbusTcpParser } from './modbus-mirror.mjs'
 
 export const DEFAULT_LEASE_TIMEOUT_MS = 30 * 60 * 1000
 export const WS_CLOSE_LEASE_EXPIRED = 4008
@@ -87,7 +88,7 @@ export async function createModbusBridge({
     socket.setNoDelay(true)
     const id = nextConnId++
     const remote = `${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? 0}`
-    const entry = { socket, remote, announced: false }
+    const entry = { socket, remote, announced: false, parser: createModbusTcpParser() }
     tcpSockets.set(id, entry)
 
     if (activeSession.listening) {
@@ -97,8 +98,32 @@ export async function createModbusBridge({
     socket.on('data', (chunk) => {
       if (checkExpiry()) return
       if (!activeSession || !activeSession.listening) return
-      totalPolls += 1
-      activeSession.ws.sendBinary(packBinaryFrame(id, chunk))
+      if (!activeSession.mirror) {
+        totalPolls += 1
+        activeSession.ws.sendBinary(packBinaryFrame(id, chunk))
+        return
+      }
+      const frames = entry.parser.push(chunk)
+      for (const frame of frames) {
+        totalPolls += 1
+        const res = activeSession.mirror.handlePlcFrame(frame)
+        if (res.watchChanged) {
+          activeSession.ws.sendText(
+            JSON.stringify({
+              type: 'watch_inputs',
+              ranges: activeSession.mirror.getWatchedRanges(),
+            }),
+          )
+        }
+        if (res.mode === 'reply') {
+          if (!socket.destroyed) socket.write(res.replyFrame)
+          if (res.pushToBrowser) {
+            activeSession.ws.sendBinary(packBinaryFrame(id, res.pushToBrowser))
+          }
+        } else {
+          activeSession.ws.sendBinary(packBinaryFrame(id, frame))
+        }
+      }
     })
 
     socket.on('error', () => {
@@ -155,6 +180,7 @@ export async function createModbusBridge({
       id: randomBytes(6).toString('hex'),
       ws,
       listening: false,
+      mirror: null,
       connectedAt: timestamp,
       lastActivityAt: timestamp,
     }
@@ -183,12 +209,33 @@ export async function createModbusBridge({
 
       if (msg.type === 'listen') {
         session.listening = true
+        session.mirror = msg.mirror ? createModbusEdgeMirror({ now }) : null
         for (const [id, entry] of tcpSockets.entries()) {
+          entry.parser.reset()
           announceSocketToSession(session, id, entry)
         }
-        onEvent(`Modbus bridge session ${session.id} listening for OpenPLC master polls`)
+        onEvent(
+          `Modbus bridge session ${session.id} listening for OpenPLC master polls${
+            session.mirror ? ' (Edge Mirror)' : ''
+          }`,
+        )
+      } else if (msg.type === 'input_update' && session.mirror) {
+        if (
+          typeof msg.fc === 'number' &&
+          typeof msg.start === 'number' &&
+          typeof msg.qty === 'number' &&
+          typeof msg.b64 === 'string'
+        ) {
+          session.mirror.applyBrowserInputUpdate({
+            fc: msg.fc,
+            start: msg.start,
+            qty: msg.qty,
+            data: Buffer.from(msg.b64, 'base64'),
+          })
+        }
       } else if (msg.type === 'close') {
         session.listening = false
+        session.mirror = null
         clearTcpSockets()
       } else if (msg.type === 'drop' && typeof msg.id === 'number') {
         tcpSockets.get(msg.id)?.socket.destroy()
@@ -202,6 +249,9 @@ export async function createModbusBridge({
       session.lastActivityAt = now()
       const connId = frame.readUInt32BE(0)
       const payload = frame.subarray(4)
+      if (session.mirror && payload.length >= 9) {
+        session.mirror.observeBrowserReply(payload)
+      }
       const entry = tcpSockets.get(connId)
       if (entry && !entry.socket.destroyed && payload.length > 0) {
         entry.socket.write(payload)

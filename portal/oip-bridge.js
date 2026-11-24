@@ -165,6 +165,64 @@
   let ws = null
   let wsOpenPromise = null
   let pillUpdater = null
+  let activeConnId = null
+  let watchedRanges = []
+  let localPollTimer = null
+  let localTxSeq = 0xf000
+  const pendingLocalReads = new Map()
+  const lastSentInputB64 = new Map()
+  const mirroredWriteTxIds = new Set()
+
+  function bytesToBase64(u8) {
+    let bin = ''
+    for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i])
+    return btoa(bin)
+  }
+
+  function buildLocalReadFrame(txId, unitId, fc, start, qty) {
+    const buf = new Uint8Array(12)
+    const view = new DataView(buf.buffer)
+    view.setUint16(0, txId, false)
+    view.setUint16(2, 0, false)
+    view.setUint16(4, 6, false)
+    view.setUint8(6, unitId & 0xff)
+    view.setUint8(7, fc & 0xff)
+    view.setUint16(8, start, false)
+    view.setUint16(10, qty, false)
+    return buf
+  }
+
+  function stopLocalPoll() {
+    if (localPollTimer !== null) {
+      window.clearInterval(localPollTimer)
+      localPollTimer = null
+    }
+    pendingLocalReads.clear()
+    lastSentInputB64.clear()
+    mirroredWriteTxIds.clear()
+  }
+
+  function ensureLocalPoll() {
+    if (localPollTimer !== null || activeConnId === null || watchedRanges.length === 0) return
+    localPollTimer = window.setInterval(() => {
+      if (activeConnId === null || !ws || ws.readyState !== WebSocket.OPEN) return
+      for (const r of watchedRanges) {
+        localTxSeq = localTxSeq >= 0xfffe ? 0xf000 : localTxSeq + 1
+        const txId = localTxSeq
+        pendingLocalReads.set(txId, r)
+        if (pendingLocalReads.size > 32) {
+          const oldest = pendingLocalReads.keys().next().value
+          pendingLocalReads.delete(oldest)
+        }
+        const frame = buildLocalReadFrame(txId, r.unitId ?? 1, r.fc, r.start, r.qty)
+        for (const cb of dataListeners) {
+          try {
+            cb({ link: 0, id: activeConnId, bytes: frame })
+          } catch {}
+        }
+      }
+    }, 20)
+  }
 
   function notifyPill() {
     if (typeof pillUpdater === 'function') pillUpdater()
@@ -238,8 +296,18 @@
             bridgeUiState.lockMessage = msg.reason || 'Live Modbus bridge is held by another session.'
             notifyPill()
             settle({ error: bridgeUiState.lockMessage })
+          } else if (msg.type === 'watch_inputs') {
+            watchedRanges = Array.isArray(msg.ranges) ? msg.ranges : []
+            ensureLocalPoll()
           } else if (msg.type === 'connection') {
             bridgeUiState.masters = Math.max(0, bridgeUiState.masters + (msg.open ? 1 : -1))
+            if (msg.open) {
+              activeConnId = msg.id
+              ensureLocalPoll()
+            } else if (activeConnId === msg.id) {
+              activeConnId = null
+              stopLocalPoll()
+            }
             notifyPill()
             for (const cb of connectionListeners) {
               try {
@@ -252,6 +320,17 @@
 
         const frame = decodeBinaryModbusFrame(event.data)
         if (!frame) return
+        if (frame.bytes.length >= 8) {
+          const fc = frame.bytes[7]
+          if (fc === 5 || fc === 6 || fc === 15 || fc === 16) {
+            const txId = (frame.bytes[0] << 8) | frame.bytes[1]
+            mirroredWriteTxIds.add(txId)
+            if (mirroredWriteTxIds.size > 64) {
+              const oldest = mirroredWriteTxIds.values().next().value
+              mirroredWriteTxIds.delete(oldest)
+            }
+          }
+        }
         bridgeUiState.polls += 1
         notifyPill()
         for (const cb of dataListeners) {
@@ -271,6 +350,9 @@
 
       socket.addEventListener('close', (ev) => {
         if (ws === socket) ws = null
+        activeConnId = null
+        watchedRanges = []
+        stopLocalPoll()
         bridgeUiState.masters = 0
         if (ev.code === WS_CLOSE_LOCK_HELD) {
           bridgeUiState.phase = 'locked'
@@ -299,6 +381,7 @@
             link: opts?.link ?? 0,
             host: opts?.host ?? '127.0.0.1',
             port: opts?.port ?? 5020,
+            mirror: true,
           }),
         )
         bridgeUiState.phase = 'listening'
@@ -319,6 +402,9 @@
         } catch {}
       }
       ws = null
+      activeConnId = null
+      watchedRanges = []
+      stopLocalPoll()
       bridgeUiState.masters = 0
       bridgeUiState.phase = 'idle'
       notifyPill()
@@ -332,8 +418,44 @@
       return () => dataListeners.delete(cb)
     },
     write: (id, bytes) => {
+      const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+      if (payload.length >= 8) {
+        const txId = (payload[0] << 8) | payload[1]
+        // 1. Intercept browser-local 20ms sensor poll replies and push only on change
+        const localReq = pendingLocalReads.get(txId)
+        if (localReq) {
+          pendingLocalReads.delete(txId)
+          if (payload.length >= 9 && payload[7] === localReq.fc) {
+            const byteCount = payload[8]
+            if (payload.length >= 9 + byteCount) {
+              const dataSlice = payload.subarray(9, 9 + byteCount)
+              const b64 = bytesToBase64(dataSlice)
+              const key = `${localReq.fc}:${localReq.start}:${localReq.qty}`
+              if (lastSentInputB64.get(key) !== b64) {
+                lastSentInputB64.set(key, b64)
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                  ws.send(
+                    JSON.stringify({
+                      type: 'input_update',
+                      fc: localReq.fc,
+                      start: localReq.start,
+                      qty: localReq.qty,
+                      b64,
+                    }),
+                  )
+                }
+              }
+            }
+          }
+          return
+        }
+        // 2. Absorb local write-acks for server-pushed mirrored output writes (EC2 already acked PLC)
+        if (mirroredWriteTxIds.delete(txId)) {
+          return
+        }
+      }
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(encodeBinaryModbusFrame(id, bytes))
+        ws.send(encodeBinaryModbusFrame(id, payload))
       }
     },
     drop: (id) => {
