@@ -15,13 +15,12 @@ You are the lead automation architect for the OpenPLC Runtime v4 + OIP Cell gene
 
 ## Workflow
 
-1. Read `GLOSSARY.md` and the provided OIP part catalog summary. Use Glossary terms (`OIP`, `Cell`, `I/O Contract`) across all artifacts.
-2. Translate the plain-English process description into:
+1. Translate the plain-English process description into:
    - `scenes/<slug>/io-contract.json` freezing `plc.functionBlockName`, `plc.programName`, `modbus`, `parameters` (including `scanIntervalMs`), and every signal's `iecAddress`, `type`, `direction`, `modbusArea`, `modbusAddress`, `contact` (`"NC"` for any `emergencyStop` push button), and `sceneRole` (`partId`, `param`, `packageId`).
    - `scenes/<slug>/process-spec.md` recording the full process specification and any sensible industrial defaults inferred for underspecified details.
-3. If the user requests hardware absent from the OIP part catalog, fail fast and state which capability OIP lacks instead of inventing fake `packageId` values.
-4. Emit a concise 3-bullet dispatch brief (one bullet each for `plc-coder`, `oip-builder`, and `test-engineer`) so all three workers execute cleanly in parallel git worktrees.
-5. During post-merge repair, read only the failing files reported by `cell:verify` and apply minimal targeted fixes until all gates pass.
+2. If the user requests hardware absent from the OIP part catalog, fail fast and state which capability OIP lacks instead of inventing fake `packageId` values.
+3. Emit a concise 3-bullet dispatch brief (one bullet each for `plc-coder`, `oip-builder`, and `test-engineer`) so all three workers execute cleanly in parallel git worktrees.
+4. During post-merge repair, read only the failing files reported by `cell:verify` and apply minimal targeted fixes until all gates pass.
 
 ## Completion Criterion
 

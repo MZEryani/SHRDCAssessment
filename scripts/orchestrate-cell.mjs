@@ -70,8 +70,7 @@ export function buildStage1Prompt({ slug, promptText, workCwd, catalogSummary })
   const contractPath = join(workCwd, 'scenes', slug, 'io-contract.json')
   const specPath = join(workCwd, 'scenes', slug, 'process-spec.md')
   return [
-    `Read ONLY "GLOSSARY.md". Do NOT browse, glob, or grep inside "Open-Industry-Project/".`,
-    `You are designing a brand-new OIP + OpenPLC Cell named "${slug}" from the user's plain-English description below.`,
+    `Design a brand-new OIP + OpenPLC Cell named "${slug}" from the user's plain-English description below.`,
     '',
     `Available OIP Part Catalog (use ONLY these packageIds and their listed signal names/directions/types):`,
     catalogSummary,
@@ -127,10 +126,10 @@ export function buildWorkerPrompt({
       contextBlock,
       '',
       `1. Call the skill tool to load "oip-scene" and read ".opencode/skills/oip-scene/oip-cli-reference.md".`,
-      `2. Do NOT grep or search inside "Open-Industry-Project/" source files. First run \`${linkCmd}\` in your worktree.`,
+      `2. First run \`${linkCmd}\` in your worktree.`,
       `3. Build "scenes/${slug}/" (project.json, scene.json version 4, and baked parts/) in ONE "npm --prefix Open-Industry-Project run add-part -- \"$PWD/scenes/${slug}\" ... --scaffold" command listing every part from the I/O Contract above (plus any despawners). Then edit scenes/${slug}/scene.json to add top-level "plcs": [{ "name": "PLC1", "runsOn": "plc", "protocol": "serve", "connect": true }], verify every sceneRole.partId/param matches the I/O Contract 1:1, and ensure project.json lists "program": ["plc/program.st"] and "tests": [].`,
       `4. Self-heal (max 2 attempts): Run \`npm --prefix Open-Industry-Project run validate-project -- "$PWD/scenes/${slug}" --strict && npm --prefix Open-Industry-Project run check-layout -- "$PWD/scenes/${slug}"\` and fix any errors (check-st and check-wiring --strict run post-merge once plc/program.st is merged).`,
-      `5. Only modify files under "scenes/${slug}/" (project.json, scene.json, parts/). Leave plc/ and tests/ untouched. Reply with one concise summary sentence.`,
+      `5. Reply with one concise summary sentence.`,
     ].join('\n')
   }
 
@@ -617,7 +616,7 @@ export async function generateCell({
         timeoutMs: 420000,
         prompt: [
           `Post-merge verification failed for Cell "scenes/${slug}/". Fix ONLY the failing files under "scenes/${slug}/" so "npm run cell:verify -- ${slug}" passes.`,
-          `Read only the failing files reported below and apply minimal targeted fixes. Do NOT browse "Open-Industry-Project/" source files.`,
+          `Read only the failing files reported below and apply minimal targeted fixes.`,
           '',
           failureSummary,
         ].join('\n'),

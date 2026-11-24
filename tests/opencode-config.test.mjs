@@ -38,12 +38,28 @@ function isGitIgnored(file) {
 }
 
 describe('OpenCode progressive-disclosure skills, tiered agents, and secret ignore rules', () => {
-  it('discovers the repo .opencode configuration directory cleanly', () => {
+  it('discovers repo opencode.json with .opencode/instructions.md and the .opencode directory cleanly', () => {
     const sources = runJson('opencode', ['debug', 'config', '--standalone'])
-    const found = sources.some(
+    const foundDir = sources.some(
       (src) => src.type === 'directory' && resolve(src.path) === OPENCODE_DIR,
     )
-    assert.equal(found, true, `Expected ${OPENCODE_DIR} in opencode debug config output`)
+    assert.equal(foundDir, true, `Expected ${OPENCODE_DIR} in opencode debug config output`)
+
+    const repoConfigPath = join(REPO_ROOT, 'opencode.json')
+    const configDoc = sources.find(
+      (src) => src.type === 'document' && resolve(src.path) === repoConfigPath,
+    )
+    assert.ok(configDoc, `Expected ${repoConfigPath} in opencode debug config output`)
+    assert.ok(
+      Array.isArray(configDoc.info?.instructions) &&
+        configDoc.info.instructions.includes('.opencode/instructions.md'),
+      `Expected opencode.json instructions to include ".opencode/instructions.md", got: ${JSON.stringify(configDoc.info)}`,
+    )
+    assert.equal(
+      existsSync(join(OPENCODE_DIR, 'instructions.md')),
+      true,
+      'Missing .opencode/instructions.md referenced by opencode.json',
+    )
   })
 
   it('defines three focused progressive-disclosure skills with valid frontmatter and disclosed references', () => {
@@ -164,6 +180,7 @@ describe('OpenCode progressive-disclosure skills, tiered agents, and secret igno
     ]
 
     const mdFiles = [
+      join(OPENCODE_DIR, 'instructions.md'),
       ...walkMarkdown(join(OPENCODE_DIR, 'agents')),
       ...walkMarkdown(join(OPENCODE_DIR, 'skills')),
     ]
