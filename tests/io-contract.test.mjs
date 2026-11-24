@@ -4,8 +4,14 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { checkConformance, deriveModbusMaster } from '../scripts/io-contract.mjs'
+import {
+  checkConformance,
+  deriveModbusMaster,
+  validateContractSchema,
+} from '../scripts/io-contract.mjs'
+import { formatCatalogSummary } from '../scripts/oip-catalog.mjs'
 import { validateOipCell } from '../scripts/validate-oip-cell.mjs'
+import { extractLayoutWarnings, verifyCell } from '../scripts/verify-cell.mjs'
 import { deriveBoxLengthFromScene } from './lib/cell-harness.mjs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -208,6 +214,121 @@ describe('I/O Contract conformance checks', () => {
     assert.equal(unexpectedProblems[0].artifact, 'scene.json')
     assert.match(unexpectedProblems[0].message, /%QW99.*despawner_1\.countTag/)
   })
+
+  it('supports %IW inputRegister (FC 4), optional Cell parameters, frozen plc POU names, and scene.plcs auto-serve on arbitrary Cells', () => {
+    const colorContract = {
+      name: 'color-sorter',
+      version: '1.0.0',
+      plc: {
+        functionBlockName: 'ColorSorterController',
+        programName: 'ColorSorterMain',
+      },
+      modbus: {
+        topology: 'oip-server-openplc-master',
+        oipHostForPlc: 'host.docker.internal',
+        port: 5020,
+        slaveId: 1,
+        cycleTimeMs: 50,
+      },
+      parameters: {
+        scanIntervalMs: 20,
+      },
+      signals: [
+        {
+          name: 'Start_PB',
+          iecAddress: '%IX0.0',
+          type: 'BOOL',
+          direction: 'oip_to_plc',
+          modbusArea: 'discreteInput',
+          modbusAddress: 0,
+          sceneRole: { partId: 'start_pb', param: 'tag', packageId: 'oip.push-button' },
+        },
+        {
+          name: 'Color_Code',
+          iecAddress: '%IW0',
+          type: 'INT',
+          direction: 'oip_to_plc',
+          modbusArea: 'inputRegister',
+          modbusAddress: 0,
+          sceneRole: { partId: 'color_1', param: 'colorTag', packageId: 'oip.color-sensor' },
+        },
+        {
+          name: 'Diverter_Cmd',
+          iecAddress: '%QX0.0',
+          type: 'BOOL',
+          direction: 'plc_to_oip',
+          modbusArea: 'coil',
+          modbusAddress: 0,
+          sceneRole: { partId: 'diverter_1', param: 'tag', packageId: 'oip.diverter' },
+        },
+      ],
+    }
+
+    const derived = deriveModbusMaster(colorContract)
+    assert.deepEqual(derived[0].config.io_points, [
+      { fc: 2, offset: '0', iec_location: '%IX0.0', len: 1, cycle_time_ms: 50 },
+      { fc: 4, offset: '0', iec_location: '%IW0', len: 1, cycle_time_ms: 50 },
+      { fc: 15, offset: '0', iec_location: '%QX0.0', len: 1, cycle_time_ms: 50 },
+    ])
+
+    const validSt = [
+      'FUNCTION_BLOCK ColorSorterController',
+      'VAR_INPUT Start_PB : BOOL; Color_Code : INT; END_VAR',
+      'VAR_OUTPUT Diverter_Cmd : BOOL; END_VAR',
+      'END_FUNCTION_BLOCK',
+      'PROGRAM ColorSorterMain',
+      'VAR',
+      '  Start_PB AT %IX0.0 : BOOL;',
+      '  Color_Code AT %IW0 : INT;',
+      '  Diverter_Cmd AT %QX0.0 : BOOL;',
+      'END_VAR',
+      'END_PROGRAM',
+      'CONFIGURATION Config0',
+      '  RESOURCE Res0 ON PLC',
+      '    TASK task0(INTERVAL := T#20ms, PRIORITY := 0);',
+      '    PROGRAM inst0 WITH task0 : ColorSorterMain;',
+      '  END_RESOURCE',
+      'END_CONFIGURATION',
+    ].join('\n')
+
+    const validScene = {
+      version: 4,
+      parts: [
+        { id: 'start_pb', packageId: 'oip.push-button', params: { tag: '%IX0.0' } },
+        { id: 'color_1', packageId: 'oip.color-sensor', params: { colorTag: '%IW0' } },
+        { id: 'diverter_1', packageId: 'oip.diverter', params: { tag: '%QX0.0' } },
+      ],
+      plcs: [{ name: 'PLC1', runsOn: 'plc', protocol: 'serve', connect: true }],
+    }
+
+    assert.deepEqual(
+      checkConformance({
+        contract: colorContract,
+        stSource: validSt,
+        modbusMaster: derived,
+        scene: validScene,
+      }),
+      [],
+    )
+
+    // Missing frozen FUNCTION_BLOCK name and missing scene.plcs auto-serve must be flagged
+    const brokenSt = validSt.replaceAll('ColorSorterController', 'WrongNameFB')
+    const brokenScene = { ...validScene, plcs: [] }
+    const problems = checkConformance({
+      contract: colorContract,
+      stSource: brokenSt,
+      modbusMaster: derived,
+      scene: brokenScene,
+    })
+    assert.ok(
+      problems.some((p) => p.artifact === 'program.st' && /ColorSorterController/.test(p.message)),
+      `Expected missing FUNCTION_BLOCK finding, got: ${JSON.stringify(problems)}`,
+    )
+    assert.ok(
+      problems.some((p) => p.artifact === 'scene.json' && /plcs.*serve/i.test(p.message)),
+      `Expected missing scene.plcs auto-serve finding, got: ${JSON.stringify(problems)}`,
+    )
+  })
 })
 
 function makeTempCellFixture() {
@@ -335,6 +456,310 @@ describe('Tracer artifacts I/O Contract alignment', () => {
     assert.doesNotMatch(tracerSt, /PhotoEye\s+AT\s+%IX0\.0\b/)
     assert.match(tracerSt, /Conveyor_Run\s+AT\s+%QX0\.0\s*:\s*BOOL\s*;/)
     assert.deepEqual(tracerModbus, deriveModbusMaster(tracerContract))
+  })
+})
+
+describe('Stage 1 I/O Contract schema and OIP catalog validation', () => {
+  const sampleCatalog = {
+    parts: [
+      {
+        id: 'oip.push-button',
+        name: 'Push Button',
+        signals: [
+          { name: 'tag', dir: 'out', type: 'BOOL' },
+          { name: 'lampTag', dir: 'in', type: 'BOOL' },
+        ],
+      },
+      {
+        id: 'oip.color-sensor',
+        name: 'Color Sensor',
+        signals: [{ name: 'colorTag', dir: 'out', type: 'INT' }],
+      },
+      {
+        id: 'oip.diverter',
+        name: 'Diverter',
+        signals: [{ name: 'tag', dir: 'in', type: 'BOOL' }],
+      },
+    ],
+  }
+
+  const validColorContract = {
+    name: 'color-sorter',
+    version: '1.0.0',
+    plc: { functionBlockName: 'ColorSorterController', programName: 'ColorSorterMain' },
+    modbus: {
+      topology: 'oip-server-openplc-master',
+      oipHostForPlc: 'host.docker.internal',
+      port: 5020,
+      slaveId: 1,
+      cycleTimeMs: 50,
+    },
+    parameters: { scanIntervalMs: 20 },
+    signals: [
+      {
+        name: 'Start_PB',
+        iecAddress: '%IX0.0',
+        type: 'BOOL',
+        direction: 'oip_to_plc',
+        modbusArea: 'discreteInput',
+        modbusAddress: 0,
+        sceneRole: { partId: 'start_pb', param: 'tag', packageId: 'oip.push-button' },
+      },
+      {
+        name: 'Color_Code',
+        iecAddress: '%IW0',
+        type: 'INT',
+        direction: 'oip_to_plc',
+        modbusArea: 'inputRegister',
+        modbusAddress: 0,
+        sceneRole: { partId: 'color_1', param: 'colorTag', packageId: 'oip.color-sensor' },
+      },
+      {
+        name: 'Diverter_Cmd',
+        iecAddress: '%QX0.0',
+        type: 'BOOL',
+        direction: 'plc_to_oip',
+        modbusArea: 'coil',
+        modbusAddress: 0,
+        sceneRole: { partId: 'diverter_1', param: 'tag', packageId: 'oip.diverter' },
+      },
+    ],
+  }
+
+  it('accepts a valid contract against the OIP catalog', () => {
+    const res = validateContractSchema(validColorContract, { catalog: sampleCatalog })
+    assert.equal(res.ok, true, JSON.stringify(res.problems))
+    assert.deepEqual(res.problems, [])
+  })
+
+  it('rejects missing plc POU names, mismatched modbusAddress, unknown OIP packageId, invalid signal param, and inverted signal direction', () => {
+    const broken = structuredClone(validColorContract)
+    delete broken.plc
+    broken.signals[0].modbusAddress = 3 // %IX0.0 must be 0
+    broken.signals[1].sceneRole.param = 'tag' // oip.color-sensor uses colorTag, not tag
+    broken.signals[2].sceneRole.packageId = 'oip.welding-laser' // unsupported hardware
+    broken.signals.push({
+      name: 'Bad_Dir',
+      iecAddress: '%QX0.1',
+      type: 'BOOL',
+      direction: 'plc_to_oip',
+      modbusArea: 'coil',
+      modbusAddress: 1,
+      sceneRole: { partId: 'start_pb_2', param: 'tag', packageId: 'oip.push-button' }, // tag is dir:'out' -> oip_to_plc
+    })
+    broken.signals.push({
+      name: 'Bad_Type',
+      iecAddress: '%IX0.1',
+      type: 'BOOL',
+      direction: 'oip_to_plc',
+      modbusArea: 'discreteInput',
+      modbusAddress: 1,
+      sceneRole: { partId: 'color_2', param: 'colorTag', packageId: 'oip.color-sensor' }, // colorTag is INT, not BOOL
+    })
+
+    const res = validateContractSchema(broken, { catalog: sampleCatalog })
+    assert.equal(res.ok, false)
+    const messages = res.problems.map((p) => p.message).join('\n')
+    assert.match(messages, /plc\.functionBlockName/i)
+    assert.match(messages, /Start_PB.*modbusAddress/i)
+    assert.match(messages, /oip\.color-sensor.*tag/i)
+    assert.match(messages, /oip\.welding-laser/i)
+    assert.match(messages, /Bad_Dir.*direction/i)
+    assert.match(messages, /Bad_Type.*type.*BOOL.*INT/i)
+  })
+
+  it('formats a concise OIP catalog summary with part IDs and signal signatures', () => {
+    const summary = formatCatalogSummary(sampleCatalog)
+    assert.match(summary, /oip\.color-sensor.*colorTag\(out:INT\)/)
+    assert.match(summary, /oip\.diverter.*tag\(in:BOOL\)/)
+  })
+})
+
+describe('Generic per-Cell verifier (cell:verify)', () => {
+  function makeSelfContainedCellFixture(slug = 'color-sorter') {
+    const root = mkdtempSync(join(tmpdir(), 'cell-verify-fixture-'))
+    const cellDir = join(root, 'scenes', slug)
+    mkdirSync(join(cellDir, 'plc'), { recursive: true })
+    mkdirSync(join(cellDir, 'tests'), { recursive: true })
+
+    const contract = {
+      name: slug,
+      version: '1.0.0',
+      plc: { functionBlockName: 'ColorSorterController', programName: 'ColorSorterMain' },
+      modbus: {
+        topology: 'oip-server-openplc-master',
+        oipHostForPlc: 'host.docker.internal',
+        port: 5020,
+        slaveId: 1,
+        cycleTimeMs: 50,
+      },
+      parameters: { scanIntervalMs: 20 },
+      signals: [
+        {
+          name: 'Color_Code',
+          iecAddress: '%IW0',
+          type: 'INT',
+          direction: 'oip_to_plc',
+          modbusArea: 'inputRegister',
+          modbusAddress: 0,
+          sceneRole: { partId: 'color_1', param: 'colorTag', packageId: 'oip.color-sensor' },
+        },
+        {
+          name: 'Diverter_Cmd',
+          iecAddress: '%QX0.0',
+          type: 'BOOL',
+          direction: 'plc_to_oip',
+          modbusArea: 'coil',
+          modbusAddress: 0,
+          sceneRole: { partId: 'diverter_1', param: 'tag', packageId: 'oip.diverter' },
+        },
+      ],
+    }
+
+    const stSource = [
+      'FUNCTION_BLOCK ColorSorterController',
+      'VAR_INPUT Color_Code : INT; END_VAR',
+      'VAR_OUTPUT Diverter_Cmd : BOOL; END_VAR',
+      '  Diverter_Cmd := (Color_Code = 1);',
+      'END_FUNCTION_BLOCK',
+      'PROGRAM ColorSorterMain',
+      'VAR',
+      '  Color_Code AT %IW0 : INT;',
+      '  Diverter_Cmd AT %QX0.0 : BOOL;',
+      'END_VAR',
+      'END_PROGRAM',
+      'CONFIGURATION Config0',
+      '  RESOURCE Res0 ON PLC',
+      '    TASK task0(INTERVAL := T#20ms, PRIORITY := 0);',
+      '    PROGRAM inst0 WITH task0 : ColorSorterMain;',
+      '  END_RESOURCE',
+      'END_CONFIGURATION',
+    ].join('\n')
+
+    const scene = {
+      version: 4,
+      parts: [
+        { id: 'color_1', packageId: 'oip.color-sensor', params: { colorTag: '%IW0' } },
+        { id: 'diverter_1', packageId: 'oip.diverter', params: { tag: '%QX0.0' } },
+      ],
+      plcs: [{ name: 'PLC1', runsOn: 'plc', protocol: 'serve', connect: true }],
+    }
+
+    writeFileSync(join(cellDir, 'io-contract.json'), JSON.stringify(contract, null, 2), 'utf8')
+    writeFileSync(join(cellDir, 'plc', 'program.st'), stSource, 'utf8')
+    writeFileSync(
+      join(cellDir, 'plc', 'modbus_master.json'),
+      JSON.stringify(deriveModbusMaster(contract), null, 2),
+      'utf8',
+    )
+    writeFileSync(join(cellDir, 'scene.json'), JSON.stringify(scene, null, 2), 'utf8')
+    writeFileSync(join(cellDir, 'tests', 'program.test.st'), "TEST 'smoke' END_TEST\n", 'utf8')
+    return root
+  }
+
+  it('verifies a self-contained generated Cell and surfaces non-fatal layout warnings without failing', () => {
+    const root = makeSelfContainedCellFixture('color-sorter')
+    try {
+      let plcCalledWith = null
+      const result = verifyCell({
+        slug: 'color-sorter',
+        repoRoot: root,
+        runPlcTest: (args) => {
+          plcCalledWith = args
+          return { passed: true, summary: '1 test passed' }
+        },
+        runOipValidators: () => ({
+          passed: true,
+          warnings: ['spawner_1: feed warning on stopped belt'],
+          summary: 'ok with 1 warning',
+        }),
+        log: () => {},
+        error: () => {},
+      })
+
+      assert.equal(result.ok, true)
+      assert.equal(result.gates.contract.passed, true)
+      assert.equal(result.gates.plcTest.passed, true)
+      assert.equal(result.gates.oipValidate.passed, true)
+      assert.deepEqual(result.warnings, ['spawner_1: feed warning on stopped belt'])
+      assert.match(plcCalledWith.stPath, /scenes[/\\]color-sorter[/\\]plc[/\\]program\.st$/)
+      assert.match(plcCalledWith.testPath, /scenes[/\\]color-sorter[/\\]tests[/\\]program\.test\.st$/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fails when OIP layout or wiring validation reports an error', () => {
+    const root = makeSelfContainedCellFixture('color-sorter')
+    try {
+      const result = verifyCell({
+        slug: 'color-sorter',
+        repoRoot: root,
+        runPlcTest: () => ({ passed: true, summary: 'ok' }),
+        runOipValidators: () => ({
+          passed: false,
+          warnings: [],
+          summary: 'check-layout failed: diverter_1 is floating',
+        }),
+        log: () => {},
+        error: () => {},
+      })
+
+      assert.equal(result.ok, false)
+      assert.equal(result.gates.oipValidate.passed, false)
+      assert.match(result.gates.oipValidate.summary, /floating/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('extracts non-fatal warnings from OIP check-layout --json output while ignoring errors', () => {
+    const npmStdout = [
+      '> oip-web@0.1.0 check-layout',
+      '> node scripts/check-layout.mjs scenes/color-sorter --json',
+      JSON.stringify({
+        ok: true,
+        errors: 0,
+        warnings: 1,
+        projects: [
+          {
+            project: 'color-sorter',
+            parts: 8,
+            findings: [
+              {
+                partId: 'spawner_1',
+                packageId: 'oip.box-spawner',
+                kind: 'feed-ungated',
+                severity: 'warning',
+                detail: 'drops onto a belt that starts and stops',
+              },
+            ],
+          },
+        ],
+      }),
+    ].join('\n')
+
+    assert.deepEqual(extractLayoutWarnings(npmStdout), [
+      'spawner_1: drops onto a belt that starts and stops',
+    ])
+  })
+
+  it('resolves Task 1 conveyor-cell legacy layout and passes all 3 gates', () => {
+    let plcCalledWith = null
+    const result = verifyCell({
+      slug: 'conveyor-cell',
+      repoRoot: REPO_ROOT,
+      runPlcTest: (args) => {
+        plcCalledWith = args
+        return { passed: true, summary: 'passed' }
+      },
+      runOipValidators: () => ({ passed: true, warnings: [], summary: 'ok' }),
+      log: () => {},
+      error: () => {},
+    })
+
+    assert.equal(result.ok, true)
+    assert.match(plcCalledWith.testPath, /tests[/\\]conveyor_cell\.test\.st$/)
   })
 })
 

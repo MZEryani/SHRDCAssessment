@@ -2,11 +2,12 @@ import { isDeepStrictEqual } from 'node:util'
 
 const AREA_FC = Object.freeze({
   discreteInput: 2,
+  inputRegister: 4,
   coil: 15,
   holdingRegister: 16,
 })
 
-const AREA_ORDER = ['discreteInput', 'coil', 'holdingRegister']
+const AREA_ORDER = ['discreteInput', 'inputRegister', 'coil', 'holdingRegister']
 
 function parseIecTimeMs(literal) {
   const match = /^T#(\d+(?:\.\d+)?)(ms|s)$/i.exec(literal.trim())
@@ -116,16 +117,35 @@ function checkStDeclarations(contract, stSource, problems) {
   }
 }
 
+function checkStPouNames(contract, stSource, problems) {
+  const fbName = contract.plc?.functionBlockName
+  if (fbName && !new RegExp(`\\bFUNCTION_BLOCK\\s+${fbName}\\b`).test(stSource)) {
+    problems.push({
+      artifact: 'program.st',
+      message: `Missing FUNCTION_BLOCK ${fbName} required by I/O Contract`,
+    })
+  }
+  const progName = contract.plc?.programName
+  if (progName && !new RegExp(`\\bPROGRAM\\s+${progName}\\b`).test(stSource)) {
+    problems.push({
+      artifact: 'program.st',
+      message: `Missing PROGRAM ${progName} required by I/O Contract`,
+    })
+  }
+}
+
 function checkStParameters(contract, stSource, problems) {
+  const params = contract.parameters ?? {}
   const paramChecks = [
-    { name: 'BATCH_TARGET', expected: contract.parameters.batchTarget, kind: 'int' },
-    { name: 'DWELL_TIME', expected: contract.parameters.inspectionDwellMs, kind: 'time' },
-    { name: 'JAM_THRESHOLD_TIME', expected: contract.parameters.jamTimeoutMs, kind: 'time' },
-    { name: 'SPAWN_PULSE_TIME', expected: contract.parameters.spawnPulseMs, kind: 'time' },
-    { name: 'SPAWN_COOLDOWN_TIME', expected: contract.parameters.spawnCooldownMs, kind: 'time' },
+    { name: 'BATCH_TARGET', expected: params.batchTarget, kind: 'int' },
+    { name: 'DWELL_TIME', expected: params.inspectionDwellMs, kind: 'time' },
+    { name: 'JAM_THRESHOLD_TIME', expected: params.jamTimeoutMs, kind: 'time' },
+    { name: 'SPAWN_PULSE_TIME', expected: params.spawnPulseMs, kind: 'time' },
+    { name: 'SPAWN_COOLDOWN_TIME', expected: params.spawnCooldownMs, kind: 'time' },
   ]
 
   for (const { name, expected, kind } of paramChecks) {
+    if (expected === undefined) continue
     const rx = new RegExp(`${name}\\s*:\\s*\\w+\\s*:=\\s*([^;]+);`)
     const match = rx.exec(stSource)
     if (!match) {
@@ -145,16 +165,17 @@ function checkStParameters(contract, stSource, problems) {
     }
   }
 
+  const scanIntervalMs = params.scanIntervalMs
   const taskMatch = /TASK\s+\w+\s*\(\s*INTERVAL\s*:=\s*([^,)]+)/.exec(stSource)
   if (!taskMatch) {
     problems.push({
       artifact: 'program.st',
-      message: `Missing TASK scan interval declaration (contract requires ${formatIecTime(contract.parameters.scanIntervalMs)})`,
+      message: `Missing TASK scan interval declaration (contract requires ${formatIecTime(scanIntervalMs)})`,
     })
-  } else if (parseIecTimeMs(taskMatch[1]) !== contract.parameters.scanIntervalMs) {
+  } else if (parseIecTimeMs(taskMatch[1]) !== scanIntervalMs) {
     problems.push({
       artifact: 'program.st',
-      message: `Task scan interval is ${taskMatch[1].trim()}, contract requires ${formatIecTime(contract.parameters.scanIntervalMs)}`,
+      message: `Task scan interval is ${taskMatch[1].trim()}, contract requires ${formatIecTime(scanIntervalMs)}`,
     })
   }
 }
@@ -269,6 +290,202 @@ function checkScene(contract, scene, problems) {
       }
     }
   }
+  const plcs = Array.isArray(scene?.plcs) ? scene.plcs : []
+  const hasAutoServe = plcs.some((plc) => plc?.protocol === 'serve' && plc?.connect === true)
+  if (!hasAutoServe) {
+    problems.push({
+      artifact: 'scene.json',
+      message:
+        'Missing top-level plcs entry with protocol: "serve" and connect: true so OIP Desktop auto-starts Modbus TCP on Play',
+    })
+  }
+}
+
+const IEC_IDENT_RX = /^[A-Za-z_][A-Za-z0-9_]*$/
+const BIT_ADDR_RX = /^%([IQ])X(\d+)\.([0-7])$/
+const WORD_ADDR_RX = /^%([IQ])W(\d+)$/
+const WORD_TYPES = new Set(['INT', 'WORD', 'DINT', 'UINT'])
+
+function parseIecAddress(addr) {
+  if (typeof addr !== 'string') return null
+  const bitMatch = BIT_ADDR_RX.exec(addr)
+  if (bitMatch) {
+    const dir = bitMatch[1] === 'I' ? 'oip_to_plc' : 'plc_to_oip'
+    const area = bitMatch[1] === 'I' ? 'discreteInput' : 'coil'
+    return {
+      direction: dir,
+      modbusArea: area,
+      modbusAddress: Number(bitMatch[2]) * 8 + Number(bitMatch[3]),
+      isBit: true,
+    }
+  }
+  const wordMatch = WORD_ADDR_RX.exec(addr)
+  if (wordMatch) {
+    const dir = wordMatch[1] === 'I' ? 'oip_to_plc' : 'plc_to_oip'
+    const area = wordMatch[1] === 'I' ? 'inputRegister' : 'holdingRegister'
+    return {
+      direction: dir,
+      modbusArea: area,
+      modbusAddress: Number(wordMatch[2]),
+      isBit: false,
+    }
+  }
+  return null
+}
+
+/**
+ * Validate a Stage 1 I/O Contract against the canonical schema and (optionally)
+ * OIP's live part catalog (`{ parts: [...] }`).
+ */
+export function validateContractSchema(contract, { catalog = null, requirePlc = true } = {}) {
+  const problems = []
+  const add = (message) => problems.push({ artifact: 'io-contract.json', message })
+
+  if (!contract || typeof contract !== 'object') {
+    add('I/O Contract must be a JSON object')
+    return { ok: false, problems }
+  }
+  if (typeof contract.name !== 'string' || contract.name.trim().length === 0) {
+    add('Missing non-empty top-level "name"')
+  }
+  if (typeof contract.version !== 'string' || contract.version.trim().length === 0) {
+    add('Missing non-empty top-level "version"')
+  }
+
+  const mb = contract.modbus
+  if (!mb || typeof mb !== 'object') {
+    add('Missing top-level "modbus" object')
+  } else {
+    if (typeof mb.oipHostForPlc !== 'string' || mb.oipHostForPlc.trim().length === 0) {
+      add('modbus.oipHostForPlc must be a non-empty string')
+    }
+    for (const key of ['port', 'slaveId', 'cycleTimeMs']) {
+      if (!Number.isInteger(mb[key]) || mb[key] <= 0) {
+        add(`modbus.${key} must be a positive integer`)
+      }
+    }
+  }
+
+  if (!Number.isInteger(contract.parameters?.scanIntervalMs) || contract.parameters.scanIntervalMs <= 0) {
+    add('parameters.scanIntervalMs must be a positive integer')
+  }
+
+  if (requirePlc) {
+    const fb = contract.plc?.functionBlockName
+    const prog = contract.plc?.programName
+    if (typeof fb !== 'string' || !IEC_IDENT_RX.test(fb)) {
+      add('Missing or invalid plc.functionBlockName (must be a valid IEC 61131-3 identifier)')
+    }
+    if (typeof prog !== 'string' || !IEC_IDENT_RX.test(prog)) {
+      add('Missing or invalid plc.programName (must be a valid IEC 61131-3 identifier)')
+    }
+    if (fb && prog && fb === prog) {
+      add('plc.functionBlockName and plc.programName must be distinct identifiers')
+    }
+  }
+
+  if (!Array.isArray(contract.signals) || contract.signals.length === 0) {
+    add('signals must be a non-empty array')
+    return { ok: false, problems }
+  }
+
+  const catalogById = catalog?.parts ? new Map(catalog.parts.map((p) => [p.id, p])) : null
+
+  const seenNames = new Set()
+  const seenIec = new Set()
+  const seenAreaAddr = new Set()
+  const seenRoles = new Set()
+
+  for (const sig of contract.signals) {
+    const label = sig?.name || '(unnamed signal)'
+    if (typeof sig?.name !== 'string' || !IEC_IDENT_RX.test(sig.name)) {
+      add(`Invalid signal name "${label}" (must be a valid IEC 61131-3 identifier)`)
+    } else if (seenNames.has(sig.name)) {
+      add(`Duplicate signal name "${sig.name}"`)
+    } else {
+      seenNames.add(sig.name)
+    }
+
+    const parsed = parseIecAddress(sig?.iecAddress)
+    if (!parsed) {
+      add(`Signal ${label} has invalid iecAddress "${sig?.iecAddress}" (expected %IXn.b, %QXn.b, %IWn, or %QWn)`)
+    } else {
+      if (seenIec.has(sig.iecAddress)) {
+        add(`Duplicate iecAddress "${sig.iecAddress}" on signal ${label}`)
+      } else {
+        seenIec.add(sig.iecAddress)
+      }
+      if (sig.direction !== parsed.direction) {
+        add(`Signal ${label} has direction "${sig.direction}", expected "${parsed.direction}" for ${sig.iecAddress}`)
+      }
+      if (sig.modbusArea !== parsed.modbusArea) {
+        add(`Signal ${label} has modbusArea "${sig.modbusArea}", expected "${parsed.modbusArea}" for ${sig.iecAddress}`)
+      }
+      if (sig.modbusAddress !== parsed.modbusAddress) {
+        add(
+          `Signal ${label} has modbusAddress ${sig.modbusAddress}, expected ${parsed.modbusAddress} for ${sig.iecAddress}`,
+        )
+      }
+      const areaKey = `${sig.modbusArea}:${sig.modbusAddress}`
+      if (seenAreaAddr.has(areaKey)) {
+        add(`Duplicate Modbus register ${areaKey} on signal ${label}`)
+      } else {
+        seenAreaAddr.add(areaKey)
+      }
+      if (parsed.isBit && sig.type !== 'BOOL') {
+        add(`Signal ${label} (${sig.iecAddress}) must have type "BOOL", got "${sig.type}"`)
+      } else if (!parsed.isBit && !WORD_TYPES.has(sig.type)) {
+        add(`Signal ${label} (${sig.iecAddress}) must have word type (INT/WORD/DINT/UINT), got "${sig.type}"`)
+      }
+    }
+
+    const partId = sig?.sceneRole?.partId
+    const param = sig?.sceneRole?.param
+    if (typeof partId !== 'string' || !partId.trim() || typeof param !== 'string' || !param.trim()) {
+      add(`Signal ${label} is missing sceneRole.partId or sceneRole.param`)
+      continue
+    }
+    const rKey = roleKey(partId, param)
+    if (seenRoles.has(rKey)) {
+      add(`Duplicate sceneRole ${rKey} on signal ${label}`)
+    } else {
+      seenRoles.add(rKey)
+    }
+
+    if (catalogById) {
+      const packageId = sig.sceneRole.packageId
+      if (typeof packageId !== 'string' || !packageId.trim()) {
+        add(`Signal ${label} (${rKey}) is missing sceneRole.packageId required for OIP catalog validation`)
+        continue
+      }
+      const partDef = catalogById.get(packageId)
+      if (!partDef) {
+        add(`Signal ${label} references unsupported OIP packageId "${packageId}" not found in OIP catalog`)
+        continue
+      }
+      const sigDef = (partDef.signals ?? []).find((s) => s.name === param)
+      if (!sigDef) {
+        const validParams = (partDef.signals ?? []).map((s) => s.name).join(', ') || '(none)'
+        add(
+          `Signal ${label} references unknown param "${param}" on ${packageId} (available signals: ${validParams})`,
+        )
+        continue
+      }
+      const expectedDir = sigDef.dir === 'out' ? 'oip_to_plc' : 'plc_to_oip'
+      if (sig.direction !== expectedDir) {
+        add(
+          `Signal ${label} direction "${sig.direction}" conflicts with OIP ${packageId}.${param} (dir="${sigDef.dir}" requires "${expectedDir}")`,
+        )
+      }
+      if (sigDef.type && sig.type !== sigDef.type) {
+        add(
+          `Signal ${label} type "${sig.type}" conflicts with OIP ${packageId}.${param} (catalog type is "${sigDef.type}")`,
+        )
+      }
+    }
+  }
+
+  return { ok: problems.length === 0, problems }
 }
 
 /**
@@ -279,6 +496,7 @@ function checkScene(contract, scene, problems) {
 export function checkConformance({ contract, stSource, modbusMaster, scene }) {
   const problems = []
   checkStDeclarations(contract, stSource, problems)
+  checkStPouNames(contract, stSource, problems)
   checkStParameters(contract, stSource, problems)
   checkModbusMaster(contract, modbusMaster, problems)
   checkScene(contract, scene, problems)

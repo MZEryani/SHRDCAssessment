@@ -10,6 +10,7 @@
     "plc:test": "node scripts/plc-test.mjs",
     "oip:validate": "node scripts/validate-oip-cell.mjs",
     "oip:desktop": "node scripts/oip-desktop.mjs",
+    "cell:verify": "node scripts/verify-cell.mjs",
     "test:contract": "node --test tests/io-contract.test.mjs",
     "test:plc-bundle": "node --test tests/plc-bundle.test.mjs",
     "test:openplc-runtime": "node --test tests/openplc-runtime.test.mjs",
