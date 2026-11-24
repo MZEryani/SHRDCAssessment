@@ -12,10 +12,12 @@
     "oip:desktop": "node scripts/oip-desktop.mjs",
     "cell:verify": "node scripts/verify-cell.mjs",
     "cell:run": "node scripts/run-cell.mjs",
+    "portal:start": "node portal/server.mjs",
     "test:contract": "node --test tests/io-contract.test.mjs",
     "test:plc-bundle": "node --test tests/plc-bundle.test.mjs",
     "test:openplc-runtime": "node --test tests/openplc-runtime.test.mjs",
     "test:harness": "node --test tests/cell-harness.test.mjs",
+    "test:portal": "node --test tests/demo-portal.test.mjs",
     "test:tracer": "node --test tests/tracer-modbus.test.mjs",
     "test:e2e": "node --test tests/conveyor-cell-e2e.test.mjs",
     "test:opencode": "node --test tests/opencode-config.test.mjs",
@@ -24,7 +26,7 @@
     "generate": "node scripts/orchestrate-cell.mjs",
     "orchestrate": "node scripts/orchestrate-cell.mjs",
     "hooks:install": "git config core.hooksPath .githooks",
-    "verify:offline": "npm run test:contract && npm run plc:test && npm run oip:validate && npm run test:opencode && npm run test:orchestrate && npm run test:plc-bundle && npm run test:harness && npm run test:openplc-runtime",
+    "verify:offline": "npm run test:contract && npm run plc:test && npm run oip:validate && npm run test:opencode && npm run test:orchestrate && npm run test:plc-bundle && npm run test:harness && npm run test:openplc-runtime && npm run test:portal",
     "verify:all": "npm run verify:offline && npm run test:tracer && npm run test:e2e"
   }
 }

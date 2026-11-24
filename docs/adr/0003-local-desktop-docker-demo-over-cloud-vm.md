@@ -1,4 +1,10 @@
+---
+status: superseded by ADR-0005
+---
+
 # Local macOS Desktop + Docker Demo Over Hosted Cloud VM
+
+> Superseded by [ADR-0005](./0005-ec2-dockerized-browser-oip-websocket-modbus-bridge.md). Retained for historical context.
 
 The primary demonstration runs locally on macOS (OIP Electron Desktop + OpenPLC Runtime v4 in Docker) accompanied by a reproducible repo, automated headless verification tests, and a short demo video, rather than hosting the simulator on a free-tier cloud VM.
 
