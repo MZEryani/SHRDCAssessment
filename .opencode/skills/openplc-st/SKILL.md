@@ -18,6 +18,7 @@ Author IEC 61131-3 Structured Text (`ST`) for OpenPLC Runtime v4.1+ (`STruC++` c
 ## Required Control Semantics
 
 - **Start interlock**: Gate `Start_PB` through `R_TRIG` so holding `Start_PB` while releasing `EStop` can never auto-restart the Cell.
+- **Fail-safe NC E-Stop**: OIP's `emergencyStop: true` push button (`estop_pb`) is always Normally Closed (`TRUE` = released/healthy, `FALSE` = struck/tripped). Invert `%IX0.2` at the `ConveyorCellMain` boundary (`EStop := NOT EStop`) while keeping `ConveyorCellController`'s internal `EStop` active-high (`TRUE` = tripped).
 - **Anti-touching spawner**: Inhibit `Spawner_Enable` whenever `Conveyor_Run` is `FALSE` (Stop, E-Stop, Inspection Dwell, Jam Fault). Pulse `Spawner_Enable` for `SPAWN_PULSE_TIME` then enforce `SPAWN_COOLDOWN_TIME`. If `Conveyor_Run` drops mid-pulse, transition directly into cooldown so resuming never emits back-to-back pulses.
 - **Inspection Dwell & Batch**: Increment `Box_Count` on `R_TRIG` of `PhotoEye`. Halt at `BATCH_TARGET`; otherwise enter `Inspection Dwell` (`Dwell_Light := TRUE`, `Conveyor_Run := FALSE`). Allow `Reset_Count_PB` only when the Cell is stopped.
 - **Jam Fault**: Latch `Jam_Fault` if `PhotoEye` remains continuously `TRUE` while `Conveyor_Run` is `TRUE` past `JAM_THRESHOLD_TIME`. Clear only when `PhotoEye` is `FALSE`, `EStop` is `FALSE`, and operator resets or stops.

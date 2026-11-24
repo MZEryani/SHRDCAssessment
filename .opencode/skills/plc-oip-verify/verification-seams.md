@@ -6,7 +6,7 @@ Disclosed reference for [`plc-oip-verify`](SKILL.md). Consult when writing or de
 
 - Load OIP modules via `Open-Industry-Project/scripts/lib/conveyor-loop.mjs` (`loadOurs`, `flattenTags`) and `modbus-tcp-listen.mjs` (`listenModbus`).
 - Derive the Modbus server table from `openplc/io-contract.json` using `oip.modbusServerFromTags({ host: '0.0.0.0', port: 5020 }, tagDefs)` and `oip.validateExternalIo(derived.io)`.
-- Bind `ModbusServerIo` to `SimWorld` (`world.setBehaviorDrivenTags(oip.externalDrivenTags(checked.io))`), seed initial operator inputs (`Start_PB`, `Stop_PB`, `EStop`, `Reset_Count_PB`), then call `deployProgram()` from `scripts/openplc-deploy.mjs`.
+- Bind `ModbusServerIo` to `SimWorld` (`world.setBehaviorDrivenTags(oip.externalDrivenTags(checked.io))`), let `SimWorld` drive resting push-button states untouched (including NC `EStop = TRUE` at rest; only apply overrides when pulsing/tripping a button), then call `deployProgram()` from `scripts/openplc-deploy.mjs`.
 - Step `SimWorld` at real-time wall-clock 60 Hz so OpenPLC's real `TON` timers (`T#2s`, `T#5s`, `T#4s`) stay synchronized with 3D conveyor physics.
 - Always clean up in `after()`: `client.stop()`, `server.close()`, `world.dispose()`.
 

@@ -38,8 +38,10 @@ describe('End-to-End: OpenPLC Runtime v4 (Docker Master) <-> OIP SimWorld Convey
     harness = await createCellHarness()
     const { batchTarget } = harness.contract.parameters
 
-    // 1. Verify Cell starts stopped
+    // 1. Verify Cell starts stopped with SimWorld's real NC E-Stop healthy (TRUE at rest, Fault_Light OFF)
     const idle = await harness.advance(0.5)
+    assert.equal(idle.inputs.EStop, true, 'SimWorld NC E-Stop (%IX0.2) should read TRUE at rest')
+    assert.equal(idle.outputs.Fault_Light, false, 'Fault_Light should start FALSE when NC E-Stop is released')
     assert.equal(idle.outputs.Conveyor_Run, false, 'Conveyor_Run should start FALSE')
     assert.equal(idle.outputs.Box_Count, 0, 'Box_Count should start at 0')
 
@@ -80,15 +82,15 @@ describe('End-to-End: OpenPLC Runtime v4 (Docker Master) <-> OIP SimWorld Convey
       50.0,
     )
 
-    // 6. Trip E-Stop -> Fault_Light illuminates; release E-Stop + Reset -> Fault_Light clears & Box_Count resets to 0
-    harness.setInput('EStop', true)
+    // 6. Strike NC E-Stop (%IX0.2 -> FALSE) -> Fault_Light illuminates; release back to SimWorld TRUE + Reset -> clears
+    harness.setInput('EStop', false)
     await harness.stepUntil(
       'E-Stop to illuminate Fault_Light and halt Conveyor_Run',
       (s) => s.outputs.Fault_Light && !s.outputs.Conveyor_Run,
       2.0,
     )
 
-    harness.setInput('EStop', false)
+    harness.clearInputOverride('EStop')
     const afterReset = await harness.pulseInput('Reset_Count_PB', {
       label: 'Reset_Count_PB while stopped to clear Fault_Light and reset Box_Count to 0',
       until: (s) => !s.outputs.Fault_Light && s.outputs.Box_Count === 0,

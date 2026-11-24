@@ -155,10 +155,11 @@ PROGRAM ConveyorCellMain
     Controller : ConveyorCellController;
   END_VAR
 
+  (* EStop (%IX0.2) is wired fail-safe Normally Closed (TRUE = released, FALSE = struck) *)
   Controller(
     Start_PB       := Start_PB,
     Stop_PB        := Stop_PB,
-    EStop          := EStop,
+    EStop          := NOT EStop,
     Reset_Count_PB := Reset_Count_PB,
     PhotoEye       := PhotoEye
   );

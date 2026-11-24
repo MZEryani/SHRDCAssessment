@@ -233,15 +233,13 @@ export async function createCellHarness({
     world = new modbus.oip.SimWorld(modbus.oip.Jolt, scene, { hz })
     world.setBehaviorDrivenTags(modbus.oip.externalDrivenTags(modbus.externalIo))
 
-    // Seed operator push-button inputs to FALSE; physical sensors remain driven by SimWorld unless overridden
+    // Let SimWorld drive resting states for all parts (including NC E-Stop = TRUE);
+    // overrides are applied only when a test explicitly sets or pulses an input.
     const inputOverrides = new Map()
-    for (const sig of inputSignals) {
-      const part = partsById.get(sig.sceneRole?.partId)
-      if (part?.packageId === 'oip.push-button') {
-        inputOverrides.set(sig.name, defaultSignalValue(sig))
-      }
-    }
 
+    // Step SimWorld once before starting OpenPLC so every part (including NC estop_pb)
+    // publishes its real resting contact state into the Modbus image before scan 0.
+    world.step()
     let worldTags = flattenTags(world.frame().tags)
     const composedSimTags = () => {
       const merged = { ...worldTags }
@@ -375,7 +373,7 @@ export async function createCellHarness({
         }
         return await advance(durationSec)
       } finally {
-        setInput(name, false)
+        clearInputOverride(name)
       }
     }
 

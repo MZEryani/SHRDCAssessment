@@ -239,6 +239,17 @@ function checkScene(contract, scene, problems) {
         message: `Role mismatch on ${partId}.${param}: wired to ${actualTag || '(empty)'}, contract assigns ${sig.name} (${sig.iecAddress})`,
       })
     }
+    if (
+      part.packageId === 'oip.push-button' &&
+      param === 'tag' &&
+      part.params?.emergencyStop === true &&
+      sig.contact !== 'NC'
+    ) {
+      problems.push({
+        artifact: 'io-contract.json',
+        message: `Signal ${sig.name} is wired to emergencyStop push-button ${partId} (always Normally Closed in OIP) but contract is missing contact: "NC"`,
+      })
+    }
   }
 
   for (const part of parts) {

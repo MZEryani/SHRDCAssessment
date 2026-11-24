@@ -41,11 +41,12 @@
       "name": "EStop",
       "iecAddress": "%IX0.2",
       "type": "BOOL",
+      "contact": "NC",
       "direction": "oip_to_plc",
       "modbusArea": "discreteInput",
       "modbusAddress": 2,
       "sceneRole": { "partId": "estop_pb", "param": "tag" },
-      "description": "Latched Emergency Stop interlock (TRUE = active/tripped)"
+      "description": "Fail-safe Normally Closed (NC) Emergency Stop interlock (TRUE = released/healthy, FALSE = struck/tripped)"
     },
     {
       "name": "Reset_Count_PB",
