@@ -11,6 +11,7 @@
     "oip:validate": "node scripts/validate-oip-cell.mjs",
     "oip:desktop": "node scripts/oip-desktop.mjs",
     "test:contract": "node --test tests/io-contract.test.mjs",
+    "test:plc-bundle": "node --test tests/plc-bundle.test.mjs",
     "test:tracer": "node --test tests/tracer-modbus.test.mjs",
     "test:e2e": "node --test tests/conveyor-cell-e2e.test.mjs",
     "test:opencode": "node --test tests/opencode-config.test.mjs",
@@ -18,7 +19,7 @@
     "opencode:probe": "node scripts/opencode-probe.mjs",
     "orchestrate": "node scripts/orchestrate-cell.mjs",
     "hooks:install": "git config core.hooksPath .githooks",
-    "verify:offline": "npm run test:contract && npm run plc:test && npm run oip:validate && npm run test:opencode && npm run test:orchestrate",
+    "verify:offline": "npm run test:contract && npm run plc:test && npm run oip:validate && npm run test:opencode && npm run test:orchestrate && npm run test:plc-bundle",
     "verify:all": "npm run verify:offline && npm run test:tracer && npm run test:e2e"
   }
 }
