@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:https'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { inflateRawSync } from 'node:zlib'
 import { deployBundle, OpenPlcClient } from '../scripts/openplc-runtime.mjs'
 import {
   buildProgramZip as facadeBuildProgramZip,
@@ -14,6 +16,7 @@ import {
   resolveStrucppBin as facadeResolveStrucppBin,
 } from '../scripts/openplc-deploy.mjs'
 import { buildProgramZip, resolveStrucppBin } from '../scripts/plc-bundle.mjs'
+import { runCell } from '../scripts/run-cell.mjs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -526,5 +529,132 @@ describe('openplc-runtime', () => {
     } finally {
       await mock.close()
     }
+  })
+})
+
+function extractZipEntryText(zipBuffer, targetName) {
+  let offset = 0
+  while (offset + 30 <= zipBuffer.length) {
+    if (zipBuffer.readUInt32LE(offset) !== 0x04034b50) break
+    const method = zipBuffer.readUInt16LE(offset + 8)
+    const compSize = zipBuffer.readUInt32LE(offset + 18)
+    const nameLen = zipBuffer.readUInt16LE(offset + 26)
+    const extraLen = zipBuffer.readUInt16LE(offset + 28)
+    const name = zipBuffer.subarray(offset + 30, offset + 30 + nameLen).toString('utf8')
+    const dataStart = offset + 30 + nameLen + extraLen
+    const data = zipBuffer.subarray(dataStart, dataStart + compSize)
+    if (name === targetName) {
+      return (method === 8 ? inflateRawSync(data) : data).toString('utf8')
+    }
+    offset = dataStart + compSize
+  }
+  return null
+}
+
+describe('cell:run generic launcher & EC2 env overrides', () => {
+  it('deploys conveyor-cell using OPENPLC_URL env override and launches desktop unless deployOnly is set', async () => {
+    const stub = createOpenPlcStub({ version: '4.1.0-cell-run', userExists: true })
+    const mock = await startMockRuntime(stub.handler)
+    const prevUrl = process.env.OPENPLC_URL
+    process.env.OPENPLC_URL = mock.baseUrl
+
+    try {
+      let desktopLaunchedDir = null
+      const res = await runCell({
+        slug: 'conveyor-cell',
+        repoRoot: REPO_ROOT,
+        deployOnly: true,
+        pollIntervals: FAST_POLL,
+        launchDesktop: ({ cellDir }) => {
+          desktopLaunchedDir = cellDir
+        },
+        log: () => {},
+      })
+
+      assert.equal(res.slug, 'conveyor-cell')
+      assert.equal(res.deployed.plcStatus, 'RUNNING')
+      assert.equal(res.launched, false)
+      assert.equal(desktopLaunchedDir, null)
+    } finally {
+      if (prevUrl === undefined) delete process.env.OPENPLC_URL
+      else process.env.OPENPLC_URL = prevUrl
+      await mock.close()
+    }
+  })
+
+  it('deploys a self-contained Cell with OIP_MODBUS_HOST override without mutating the file on disk', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cell-run-fixture-'))
+    const cellDir = join(root, 'scenes', 'demo-cell')
+    mkdirSync(join(cellDir, 'plc'), { recursive: true })
+    cpSync(join(REPO_ROOT, 'scenes', 'conveyor-cell', 'plc', 'program.st'), join(cellDir, 'plc', 'program.st'))
+    cpSync(
+      join(REPO_ROOT, 'openplc', 'conveyor_cell_modbus_master.json'),
+      join(cellDir, 'plc', 'modbus_master.json'),
+    )
+    cpSync(join(REPO_ROOT, 'openplc', 'io-contract.json'), join(cellDir, 'io-contract.json'))
+    cpSync(join(REPO_ROOT, 'scenes', 'conveyor-cell', 'scene.json'), join(cellDir, 'scene.json'))
+
+    const stub = createOpenPlcStub({ version: '4.1.0-ec2', userExists: true })
+    const mock = await startMockRuntime(stub.handler)
+    const prevHost = process.env.OIP_MODBUS_HOST
+    process.env.OIP_MODBUS_HOST = '10.0.1.42'
+
+    try {
+      let launchedDir = null
+      const res = await runCell({
+        slug: 'demo-cell',
+        repoRoot: root,
+        runtimeUrl: mock.baseUrl,
+        pollIntervals: FAST_POLL,
+        launchDesktop: ({ cellDir: dir }) => {
+          launchedDir = dir
+        },
+        log: () => {},
+      })
+
+      assert.equal(res.deployed.plcStatus, 'RUNNING')
+      assert.equal(res.launched, true)
+      assert.equal(launchedDir, cellDir)
+
+      const uploaded = stub.getUploadedFile()
+      const modbusJson = JSON.parse(extractZipEntryText(uploaded.data, 'conf/modbus_master.json'))
+      assert.equal(modbusJson[0].config.host, '10.0.1.42')
+
+      // File on disk must remain untouched
+      const diskModbus = JSON.parse(readFileSync(join(cellDir, 'plc', 'modbus_master.json'), 'utf8'))
+      assert.equal(diskModbus[0].config.host, 'host.docker.internal')
+    } finally {
+      if (prevHost === undefined) delete process.env.OIP_MODBUS_HOST
+      else process.env.OIP_MODBUS_HOST = prevHost
+      await mock.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('supports openOnly mode by skipping OpenPLC deploy and launching OIP Desktop directly', async () => {
+    let deployCalled = false
+    let launchedDir = null
+    const res = await runCell({
+      slug: 'conveyor-cell',
+      repoRoot: REPO_ROOT,
+      openOnly: true,
+      deploy: async () => {
+        deployCalled = true
+      },
+      launchDesktop: ({ cellDir }) => {
+        launchedDir = cellDir
+      },
+      log: () => {},
+    })
+
+    assert.equal(deployCalled, false)
+    assert.equal(res.deployed, null)
+    assert.equal(res.launched, true)
+    assert.equal(launchedDir, join(REPO_ROOT, 'scenes', 'conveyor-cell'))
+
+    await assert.rejects(
+      () => runCell({ slug: 'conveyor-cell', repoRoot: REPO_ROOT, deployOnly: true, openOnly: true }),
+      /Cannot combine --deploy-only and --open-only/,
+    )
   })
 })

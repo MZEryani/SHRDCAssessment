@@ -156,7 +156,7 @@ export class OpenPlcClient {
 export async function deployBundle({
   zipBuffer,
   md5,
-  runtimeUrl = process.env.OPENPLC_URL ?? 'https://127.0.0.1:8443',
+  runtimeUrl = process.env.OPENPLC_URL || 'https://127.0.0.1:8443',
   username = process.env.OPENPLC_USER ?? 'openplc',
   password = process.env.OPENPLC_PASSWORD ?? 'openplc',
   startAfterDeploy = true,
