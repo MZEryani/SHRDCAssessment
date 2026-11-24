@@ -1,5 +1,14 @@
 export const WORKERS = ['plc-coder', 'oip-builder', 'test-engineer']
 
+export function createGates(status = 'pending') {
+  return {
+    contractTest: status,
+    plcTest: status,
+    oipValidate: status,
+    e2eModbus: status,
+  }
+}
+
 export function createInitialState(config = {}) {
   const workers = {}
   for (const id of WORKERS) {
@@ -16,7 +25,7 @@ export function createInitialState(config = {}) {
     workers,
     integrationWorktreeOpen: false,
     mergeConflicts: 0,
-    gates: { plcTest: 'pending', oipValidate: 'pending', e2eModbus: 'pending' },
+    gates: createGates('pending'),
     repairAttempts: 0,
     proofCaptured: false,
     leakedWorktrees: 0,
@@ -212,7 +221,7 @@ export function transition(state, event) {
         state,
         {
           phase: 'done',
-          gates: { plcTest: 'pass', oipValidate: 'pass', e2eModbus: 'pass' },
+          gates: createGates('pass'),
           proofCaptured: true,
           workers: teardownAllWorktrees(state.workers),
           integrationWorktreeOpen: false,
@@ -222,7 +231,9 @@ export function transition(state, event) {
 
     case 'GATE_FAIL_REPAIR': {
       if (state.phase !== 'stage4_verify') return reject(state, 'Stage 4 verification is not active.')
-      const gates = event.gates ?? { plcTest: 'pass', oipValidate: 'fail', e2eModbus: 'pending' }
+      const gates = event.gates
+        ? { ...createGates('pending'), ...event.gates }
+        : { contractTest: 'pass', plcTest: 'pass', oipValidate: 'fail', e2eModbus: 'pending' }
       if (state.repairAttempts >= state.maxPostMergeRepairs) {
         return accept(
           state,
@@ -252,7 +263,7 @@ export function transition(state, event) {
         state,
         {
           phase: 'stage4_verify',
-          gates: { plcTest: 'pending', oipValidate: 'pending', e2eModbus: 'pending' },
+          gates: createGates('pending'),
         },
         'Orchestrator patched integration worktree. Re-running Stage 4 verification gates.',
       )

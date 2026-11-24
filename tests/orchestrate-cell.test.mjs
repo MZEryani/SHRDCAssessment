@@ -1,18 +1,23 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import {
+  buildGreenfieldWorkerPrompt,
+  buildStage1Prompt,
   GREENFIELD_FILES,
   inspectNdjsonRetryLine,
   mergeWorkerBranches,
   parseOpenCodeNdjson,
   prepareGreenfieldBase,
+  runOrchestration,
+  WORKER_SPECS,
 } from '../scripts/orchestrate-cell.mjs'
 import {
+  createGates,
   createInitialState,
   transition,
 } from '../scripts/orchestration-machine.mjs'
@@ -161,6 +166,13 @@ describe('Parallel git worktree orchestration pipeline', () => {
 
   it('enforces legal orchestration state transitions, bounded repairs, and zero leaked worktrees', () => {
     let state = createInitialState({ maxWorkerSelfHeals: 2, maxPostMergeRepairs: 1 })
+    assert.deepEqual(state.gates, createGates('pending'))
+    assert.deepEqual(state.gates, {
+      contractTest: 'pending',
+      plcTest: 'pending',
+      oipValidate: 'pending',
+      e2eModbus: 'pending',
+    })
     state = transition(state, { type: 'START_PREFLIGHT' })
     state = transition(state, {
       type: 'PREFLIGHT_RESOLVED',
@@ -189,17 +201,34 @@ describe('Parallel git worktree orchestration pipeline', () => {
     assert.equal(state.phase, 'stage4_verify')
     assert.equal(state.leakedWorktrees, 4)
 
-    // First post-merge failure triggers repair pass; second exhausts budget and cleans up all worktrees
-    state = transition(state, { type: 'GATE_FAIL_REPAIR' })
+    // First post-merge failure triggers repair pass with all 4 gate keys normalized
+    state = transition(state, {
+      type: 'GATE_FAIL_REPAIR',
+      gates: { contractTest: 'fail', plcTest: 'pass', oipValidate: 'pass' },
+    })
     assert.equal(state.phase, 'stage4_repair')
     assert.equal(state.repairAttempts, 1)
+    assert.deepEqual(state.gates, {
+      contractTest: 'fail',
+      plcTest: 'pass',
+      oipValidate: 'pass',
+      e2eModbus: 'pending',
+    })
 
     state = transition(state, { type: 'REPAIR_PATCH_APPLIED' })
     assert.equal(state.phase, 'stage4_verify')
+    assert.deepEqual(state.gates, createGates('pending'))
 
+    // Default GATE_FAIL_REPAIR uses all 4 gates and exhausts budget on second failure
     state = transition(state, { type: 'GATE_FAIL_REPAIR' })
     assert.equal(state.phase, 'failed')
     assert.equal(state.leakedWorktrees, 0)
+    assert.deepEqual(state.gates, {
+      contractTest: 'pass',
+      plcTest: 'pass',
+      oipValidate: 'fail',
+      e2eModbus: 'pending',
+    })
 
     // Happy-path done, worker API abort, and merge conflict all guarantee zero leaked worktrees
     let doneState = createInitialState()
@@ -225,6 +254,7 @@ describe('Parallel git worktree orchestration pipeline', () => {
     doneState = transition(doneState, { type: 'GATES_ALL_PASS' })
     assert.equal(doneState.phase, 'done')
     assert.equal(doneState.leakedWorktrees, 0)
+    assert.deepEqual(doneState.gates, createGates('pass'))
   })
 
   it('aborts probeSingleModel on hard timeout with SIGTERM and handles split NDJSON chunks', async () => {
@@ -386,6 +416,546 @@ describe('Parallel git worktree orchestration pipeline', () => {
       assert.equal(existsSync(base.baseWorktreePath), false)
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('builds Stage 1 and greenfield worker prompts without contract/modbus/scene drift', () => {
+    const stage1Greenfield = buildStage1Prompt({
+      specPath: 'docs/cell-process-spec.md',
+      specText: 'PROCESS SPEC',
+      workCwd: '/tmp/greenfield-base',
+      fromScratch: true,
+    })
+    assert.match(stage1Greenfield, /\/tmp\/greenfield-base\/openplc\/io-contract\.json/)
+    assert.match(
+      stage1Greenfield,
+      /EStop %IX0\.2 estop_pb\.tag with contact: "NC", TRUE = released\/healthy, FALSE = struck\/tripped/,
+    )
+    assert.match(stage1Greenfield, /PROCESS SPEC/)
+
+    const stage1Verify = buildStage1Prompt({
+      specPath: 'docs/cell-process-spec.md',
+      specText: 'VERIFY SPEC',
+      workCwd: '/tmp/repo',
+      fromScratch: false,
+    })
+    assert.match(stage1Verify, /Read docs\/cell-process-spec\.md and openplc\/io-contract\.json\./)
+    assert.match(stage1Verify, /VERIFY SPEC/)
+
+    const plcPrompt = buildGreenfieldWorkerPrompt({
+      workerSpec: WORKER_SPECS.find((w) => w.agent === 'plc-coder'),
+      orchestratorBrief: 'BRIEF',
+      repoRoot: '/tmp/custom-repo',
+    })
+    assert.match(plcPrompt, /\bderiveModbusMaster\b/)
+    assert.doesNotMatch(plcPrompt, /deriveModbusMasterConfig/)
+    assert.match(plcPrompt, /ConveyorCellMain/)
+    assert.match(plcPrompt, /EStop := NOT EStop/)
+    assert.match(plcPrompt, /\/tmp\/custom-repo\/\.tools/)
+
+    const oipPrompt = buildGreenfieldWorkerPrompt({
+      workerSpec: WORKER_SPECS.find((w) => w.agent === 'oip-builder'),
+      orchestratorBrief: 'BRIEF',
+      repoRoot: '/tmp/custom-repo',
+    })
+    assert.match(oipPrompt, /scenes\/conveyor-cell\/scene\.json/)
+    assert.match(oipPrompt, /"plcs": \[\{ "name": "PLC1", "runsOn": "plc", "protocol": "serve", "connect": true \}\]/)
+
+    const testPrompt = buildGreenfieldWorkerPrompt({
+      workerSpec: WORKER_SPECS.find((w) => w.agent === 'test-engineer'),
+      orchestratorBrief: 'BRIEF',
+      repoRoot: '/tmp/custom-repo',
+    })
+    assert.match(testPrompt, /tests\/conveyor_cell\.test\.st/)
+  })
+})
+
+function makeFakeAgentTelemetry({
+  agent,
+  model,
+  worktreePath = null,
+  skillsLoaded = [],
+  finalText = `${agent} ok`,
+  startMs = 1700000000000,
+  endMs = 1700000000250,
+}) {
+  return {
+    agent,
+    model,
+    startedAt: new Date(startMs).toISOString(),
+    finishedAt: new Date(endMs).toISOString(),
+    durationMs: endMs - startMs,
+    worktreePath,
+    sessionId: `ses_${agent}`,
+    skillsLoaded,
+    toolsUsed: { read: 1, write: 1 },
+    tokens: { input: 100, output: 25, reasoning: 5, cacheRead: 0, cacheWrite: 0 },
+    costUsd: 0.001,
+    finalText,
+    error: null,
+  }
+}
+
+function createFakeOrchestrationEnv({
+  specPath = 'docs/seam-spec.md',
+  includeContract = true,
+  mergeConflicts = 0,
+} = {}) {
+  const tempDir = mkdtempSync(join(tmpdir(), 'orchestrate-seam-'))
+  const repoDir = join(tempDir, 'repo')
+  mkdirSync(join(repoDir, 'docs'), { recursive: true })
+  writeFileSync(join(repoDir, specPath), '# Seam Spec\nStart and stop conveyor cell.\n')
+  if (includeContract) {
+    mkdirSync(join(repoDir, 'openplc'), { recursive: true })
+    writeFileSync(
+      join(repoDir, 'openplc', 'io-contract.json'),
+      JSON.stringify({ signals: [{ name: 'Start_PB' }, { name: 'EStop', contact: 'NC' }] }),
+    )
+  }
+
+  const openWorktrees = new Set()
+  const committedPaths = []
+  const linkedTargets = []
+  const mergeCalls = []
+  const logs = []
+  let greenfieldCleanups = 0
+  let mergeCleanups = 0
+
+  const workspace = {
+    listWorktreePaths: () => new Set([repoDir, ...openWorktrees]),
+    removeWorktrees: (paths) => {
+      for (const p of paths) openWorktrees.delete(p)
+    },
+    linkLocalToolchains: (targetDir) => {
+      linkedTargets.push(targetDir)
+    },
+    commitPath: (opts) => {
+      committedPaths.push(opts)
+    },
+    prepareGreenfieldBase: ({ runId, stripFiles }) => {
+      const baseWorktreePath = join(tempDir, `wt-base-${runId}`)
+      mkdirSync(baseWorktreePath, { recursive: true })
+      openWorktrees.add(baseWorktreePath)
+      return {
+        baseBranch: `orchestrate/${runId}/base`,
+        baseWorktreePath,
+        stripFiles,
+        cleanup: () => {
+          greenfieldCleanups += 1
+          openWorktrees.delete(baseWorktreePath)
+        },
+      }
+    },
+    mergeWorkerBranches: ({ runId, baseRef, workers }) => {
+      mergeCalls.push({ runId, baseRef, workers })
+      const integrationWorktreePath = join(tempDir, `wt-int-${runId}`)
+      mkdirSync(integrationWorktreePath, { recursive: true })
+      openWorktrees.add(integrationWorktreePath)
+      return {
+        integrationBranch: `orchestrate/${runId}/integration`,
+        integrationWorktreePath,
+        conflicts: mergeConflicts,
+        mergedBranches: workers.map((w) => ({
+          worker: w.name,
+          branch: `orchestrate/${runId}/${w.name}`,
+          commitSha: 'abc1234',
+          mergeSha: mergeConflicts === 0 ? 'def5678' : undefined,
+          filesChanged: w.ownedFiles ?? [`${w.name}.txt`],
+        })),
+        cleanup: () => {
+          mergeCleanups += 1
+          openWorktrees.delete(integrationWorktreePath)
+          for (const w of workers) openWorktrees.delete(w.worktreePath)
+        },
+      }
+    },
+  }
+
+  const agentCalls = []
+  const writeProofCalls = []
+  const gateCalls = []
+
+  const createRunAgent = ({ onStage1, onWorker, onRepair } = {}) => async (opts) => {
+    agentCalls.push(opts)
+    if (opts.worktreeName) {
+      const wt = join(tempDir, `wt-${opts.agent}`)
+      mkdirSync(wt, { recursive: true })
+      openWorktrees.add(wt)
+      if (onWorker) {
+        const custom = await onWorker(opts, wt)
+        if (custom !== undefined) return custom
+      }
+      const expectedSkill = WORKER_SPECS.find((w) => w.agent === opts.agent)?.expectedSkill
+      return makeFakeAgentTelemetry({
+        agent: opts.agent,
+        model: opts.model,
+        worktreePath: wt,
+        skillsLoaded: expectedSkill ? [expectedSkill] : [],
+      })
+    }
+    if (opts.cwd !== repoDir && !opts.cwd.includes('wt-base-')) {
+      if (onRepair) {
+        const custom = await onRepair(opts)
+        if (custom !== undefined) return custom
+      }
+      return makeFakeAgentTelemetry({
+        agent: opts.agent,
+        model: opts.model,
+        finalText: 'Applied targeted repair.',
+      })
+    }
+    if (onStage1) {
+      const custom = await onStage1(opts)
+      if (custom !== undefined) return custom
+    }
+    return makeFakeAgentTelemetry({
+      agent: opts.agent,
+      model: opts.model,
+      finalText: '3-bullet brief',
+    })
+  }
+
+  return {
+    tempDir,
+    repoDir,
+    specPath,
+    openWorktrees,
+    committedPaths,
+    linkedTargets,
+    mergeCalls,
+    agentCalls,
+    writeProofCalls,
+    gateCalls,
+    logs,
+    get greenfieldCleanups() {
+      return greenfieldCleanups
+    },
+    get mergeCleanups() {
+      return mergeCleanups
+    },
+    workspace,
+    createRunAgent,
+    writeProof: (payload) => writeProofCalls.push(payload),
+    log: (msg) => logs.push(msg),
+    cleanup: () => rmSync(tempDir, { recursive: true, force: true }),
+  }
+}
+
+describe('runOrchestration offline seam tests', () => {
+  it('completes verify happy path, defaults proof output to repoRoot, and leaks zero worktrees', async () => {
+    const env = createFakeOrchestrationEnv({ specPath: 'docs/seam-spec.md', includeContract: true })
+    try {
+      const proof = await runOrchestration({
+        specPath: env.specPath,
+        repoRoot: env.repoDir,
+        resolveModels: () => ({ orchestrator: 'test/orch', worker: 'test/worker' }),
+        probeModels: async () => {
+          throw new Error('probeModels should not run when usePreflight is false')
+        },
+        workspace: env.workspace,
+        runAgent: env.createRunAgent(),
+        runGate: (label, cmd, args, cwd) => {
+          env.gateCalls.push({ label, cmd, args, cwd })
+          return { label, passed: true, durationMs: 5, summary: 'PASS' }
+        },
+        log: env.log,
+      })
+
+      assert.equal(proof.mode, 'verify')
+      assert.equal(proof.repairAttempts, 0)
+      assert.equal(proof.repairPass, undefined)
+      assert.equal(proof.orchestrator.model, 'test/orch')
+      assert.equal(proof.workers.length, 3)
+      assert.deepEqual(
+        env.gateCalls.map((g) => g.label),
+        ['test:contract', 'plc:test', 'oip:validate', 'test:e2e'],
+      )
+      assert.equal(proof.verification.contractTest.passed, true)
+      assert.equal(proof.verification.plcTest.passed, true)
+      assert.equal(proof.verification.oipValidate.passed, true)
+      assert.equal(proof.verification.e2eModbus.passed, true)
+      assert.equal(existsSync(join(env.repoDir, 'docs', 'orchestration-proof.json')), true)
+      assert.equal(existsSync(join(env.repoDir, 'docs', 'orchestration-proof.md')), true)
+      assert.equal(env.agentCalls[0].cwd, env.repoDir)
+      assert.equal(env.openWorktrees.size, 0)
+    } finally {
+      env.cleanup()
+    }
+  })
+
+  it('completes fromScratch + usePreflight happy path with injected adapters and zero leaked worktrees', async () => {
+    const env = createFakeOrchestrationEnv({ specPath: 'docs/seam-spec.md', includeContract: false })
+    let probeCalls = 0
+    try {
+      const proof = await runOrchestration({
+        specPath: env.specPath,
+        usePreflight: true,
+        fromScratch: true,
+        repoRoot: env.repoDir,
+        resolveModels: () => {
+          throw new Error('resolveModels should not run when probeModels resolves both models')
+        },
+        probeModels: async () => {
+          probeCalls += 1
+          return {
+            ok: true,
+            orchestratorModel: 'probe/orch',
+            workerModel: 'probe/worker',
+            fallbackUsed: true,
+            attempts: [],
+          }
+        },
+        workspace: env.workspace,
+        runAgent: env.createRunAgent({
+          onStage1: (opts) => {
+            mkdirSync(join(opts.cwd, 'openplc'), { recursive: true })
+            writeFileSync(
+              join(opts.cwd, 'openplc', 'io-contract.json'),
+              JSON.stringify({ signals: [{ name: 'Start_PB' }, { name: 'EStop', contact: 'NC' }] }),
+            )
+          },
+        }),
+        runGate: (label, cmd, args, cwd) => {
+          env.gateCalls.push({ label, cmd, args, cwd })
+          return { label, passed: true, durationMs: 5, summary: 'PASS' }
+        },
+        writeProof: env.writeProof,
+        log: env.log,
+      })
+
+      assert.equal(probeCalls, 1)
+      assert.equal(proof.mode, 'from-scratch')
+      assert.equal(proof.repairAttempts, 0)
+      assert.equal(proof.orchestrator.model, 'probe/orch')
+      assert.equal(proof.workers[0].model, 'probe/worker')
+      assert.equal(env.committedPaths.length, 1)
+      assert.equal(env.committedPaths[0].pathSpec, 'openplc/io-contract.json')
+      assert.notEqual(env.agentCalls[0].cwd, env.repoDir)
+      assert.match(env.agentCalls[0].prompt, /contact: "NC"/)
+      const plcCall = env.agentCalls.find((c) => c.agent === 'plc-coder')
+      assert.match(plcCall.prompt, /\bderiveModbusMaster\b/)
+      assert.match(plcCall.prompt, /EStop := NOT EStop/)
+      assert.ok(plcCall.prompt.includes(`${env.repoDir}/.tools`))
+      const oipCall = env.agentCalls.find((c) => c.agent === 'oip-builder')
+      assert.match(oipCall.prompt, /"plcs":/)
+      assert.ok(env.mergeCalls[0].baseRef.endsWith('/base'))
+      assert.deepEqual(
+        env.gateCalls.map((g) => g.label),
+        ['test:contract', 'plc:test', 'oip:validate', 'test:e2e'],
+      )
+      assert.equal(env.writeProofCalls.length, 1)
+      assert.equal(env.writeProofCalls[0].repoRoot, env.repoDir)
+      assert.equal(env.greenfieldCleanups, 1)
+      assert.equal(env.mergeCleanups, 1)
+      assert.equal(env.openWorktrees.size, 0)
+    } finally {
+      env.cleanup()
+    }
+  })
+
+  it('rejects Stage 1 failure in fromScratch mode when io-contract.json is missing or agent fails, skips Stage 2, and cleans up greenfieldBase', async () => {
+    const env = createFakeOrchestrationEnv({ specPath: 'docs/seam-spec.md', includeContract: false })
+    try {
+      await assert.rejects(
+        runOrchestration({
+          specPath: env.specPath,
+          fromScratch: true,
+          repoRoot: env.repoDir,
+          resolveModels: () => ({ orchestrator: 'test/orch', worker: 'test/worker' }),
+          workspace: env.workspace,
+          runAgent: env.createRunAgent(), // Resolves without writing openplc/io-contract.json
+          runGate: () => {
+            throw new Error('runGate must not execute on Stage 1 failure')
+          },
+          writeProof: env.writeProof,
+          log: env.log,
+        }),
+        /Orchestrator did not write .*openplc\/io-contract\.json/,
+      )
+
+      assert.equal(env.agentCalls.length, 1)
+      assert.equal(env.mergeCalls.length, 0)
+      assert.equal(env.writeProofCalls.length, 0)
+      assert.equal(env.greenfieldCleanups, 1)
+      assert.equal(env.openWorktrees.size, 0)
+
+      await assert.rejects(
+        runOrchestration({
+          specPath: env.specPath,
+          fromScratch: true,
+          repoRoot: env.repoDir,
+          resolveModels: () => ({ orchestrator: 'test/orch', worker: 'test/worker' }),
+          workspace: env.workspace,
+          runAgent: env.createRunAgent({
+            onStage1: () => {
+              throw new Error('Stage 1 provider error')
+            },
+          }),
+          runGate: () => {
+            throw new Error('runGate must not execute on Stage 1 rejection')
+          },
+          writeProof: env.writeProof,
+          log: env.log,
+        }),
+        /Stage 1 provider error/,
+      )
+
+      assert.equal(env.agentCalls.length, 2)
+      assert.equal(env.mergeCalls.length, 0)
+      assert.equal(env.writeProofCalls.length, 0)
+      assert.equal(env.greenfieldCleanups, 2)
+      assert.equal(env.openWorktrees.size, 0)
+    } finally {
+      env.cleanup()
+    }
+  })
+
+  it('aborts Stage 2 fail-fast when a worker rejects, removes all sibling worktrees, and skips Stage 3', async () => {
+    const env = createFakeOrchestrationEnv({ specPath: 'docs/seam-spec.md', includeContract: true })
+    try {
+      await assert.rejects(
+        runOrchestration({
+          specPath: env.specPath,
+          repoRoot: env.repoDir,
+          resolveModels: () => ({ orchestrator: 'test/orch', worker: 'test/worker' }),
+          workspace: env.workspace,
+          runAgent: env.createRunAgent({
+            onWorker: async (opts) => {
+              if (opts.agent === 'oip-builder') {
+                throw new Error('Agent "oip-builder" Fail-fast abort on HTTP 503 retry attempt 3')
+              }
+            },
+          }),
+          runGate: () => {
+            throw new Error('runGate must not execute when Stage 2 aborts')
+          },
+          writeProof: env.writeProof,
+          log: env.log,
+        }),
+        /Fail-fast abort on HTTP 503/,
+      )
+
+      assert.equal(env.agentCalls.length, 4)
+      assert.equal(env.mergeCalls.length, 0)
+      assert.equal(env.writeProofCalls.length, 0)
+      assert.equal(env.openWorktrees.size, 0)
+    } finally {
+      env.cleanup()
+    }
+  })
+
+  it('rejects on Stage 3 merge conflict, runs merge cleanup and worktree cleanup, and skips Stage 4', async () => {
+    const env = createFakeOrchestrationEnv({
+      specPath: 'docs/seam-spec.md',
+      includeContract: true,
+      mergeConflicts: 1,
+    })
+    try {
+      await assert.rejects(
+        runOrchestration({
+          specPath: env.specPath,
+          repoRoot: env.repoDir,
+          resolveModels: () => ({ orchestrator: 'test/orch', worker: 'test/worker' }),
+          workspace: env.workspace,
+          runAgent: env.createRunAgent(),
+          runGate: (label) => {
+            env.gateCalls.push({ label })
+            return { label, passed: true, durationMs: 5, summary: 'PASS' }
+          },
+          writeProof: env.writeProof,
+          log: env.log,
+        }),
+        /Merge produced 1 conflict\(s\)/,
+      )
+
+      assert.equal(env.mergeCalls.length, 1)
+      assert.equal(env.mergeCleanups, 1)
+      assert.equal(env.gateCalls.length, 0)
+      assert.equal(env.writeProofCalls.length, 0)
+      assert.equal(env.openWorktrees.size, 0)
+    } finally {
+      env.cleanup()
+    }
+  })
+
+  it('recovers via one post-merge Orchestrator repair pass when test:contract fails initially', async () => {
+    const env = createFakeOrchestrationEnv({ specPath: 'docs/seam-spec.md', includeContract: true })
+    let gatePassRound = 0
+    try {
+      const proof = await runOrchestration({
+        specPath: env.specPath,
+        repoRoot: env.repoDir,
+        resolveModels: () => ({ orchestrator: 'test/orch', worker: 'test/worker' }),
+        workspace: env.workspace,
+        runAgent: env.createRunAgent(),
+        runGate: (label) => {
+          if (label === 'test:contract') gatePassRound += 1
+          env.gateCalls.push({ label, round: gatePassRound })
+          if (gatePassRound === 1 && label === 'test:contract') {
+            return { label, passed: false, durationMs: 4, summary: 'EStop missing contact: "NC"' }
+          }
+          return { label, passed: true, durationMs: 4, summary: 'PASS' }
+        },
+        writeProof: env.writeProof,
+        log: env.log,
+      })
+
+      assert.deepEqual(
+        env.gateCalls.map((g) => g.label),
+        ['test:contract', 'plc:test', 'oip:validate', 'test:contract', 'plc:test', 'oip:validate', 'test:e2e'],
+      )
+      assert.equal(proof.repairAttempts, 1)
+      assert.ok(proof.repairPass)
+      assert.equal(proof.repairPass.agent, 'orchestrator')
+      const repairCall = env.agentCalls[4]
+      assert.equal(repairCall.agent, 'orchestrator')
+      assert.match(repairCall.prompt, /test:contract \(FAIL\):\nEStop missing contact: "NC"/)
+      assert.equal(env.writeProofCalls.length, 1)
+      assert.equal(env.mergeCleanups, 1)
+      assert.equal(env.openWorktrees.size, 0)
+    } finally {
+      env.cleanup()
+    }
+  })
+
+  it('rejects when post-merge repair budget is exhausted without writing proof or leaking worktrees', async () => {
+    const env = createFakeOrchestrationEnv({ specPath: 'docs/seam-spec.md', includeContract: true })
+    let round = 0
+    try {
+      await assert.rejects(
+        runOrchestration({
+          specPath: env.specPath,
+          repoRoot: env.repoDir,
+          resolveModels: () => ({ orchestrator: 'test/orch', worker: 'test/worker' }),
+          workspace: env.workspace,
+          runAgent: env.createRunAgent(),
+          runGate: (label) => {
+            if (label === 'test:contract') round += 1
+            env.gateCalls.push({ label, round })
+            if (round === 1 && label === 'plc:test') {
+              return { label, passed: false, durationMs: 4, summary: 'PLC test fail' }
+            }
+            if (round === 2 && label === 'test:e2e') {
+              return { label, passed: false, durationMs: 4, summary: 'E2E modbus timeout' }
+            }
+            return { label, passed: true, durationMs: 4, summary: 'PASS' }
+          },
+          writeProof: env.writeProof,
+          log: env.log,
+        }),
+        /Verification gate failed after repair budget exhausted/,
+      )
+
+      assert.equal(env.agentCalls.length, 5) // 1 stage1 + 3 workers + 1 repair
+      assert.deepEqual(
+        env.gateCalls.map((g) => g.label),
+        ['test:contract', 'plc:test', 'oip:validate', 'test:contract', 'plc:test', 'oip:validate', 'test:e2e'],
+      )
+      assert.equal(env.writeProofCalls.length, 0)
+      assert.equal(env.mergeCleanups, 1)
+      assert.equal(env.openWorktrees.size, 0)
+    } finally {
+      env.cleanup()
     }
   })
 })
