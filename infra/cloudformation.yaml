@@ -28,9 +28,12 @@ Parameters:
     Type: String
     Default: t3.medium
     AllowedValues:
+      - t3.small
       - t3.medium
       - t3.large
-    Description: x86_64 EC2 instance type (t3.medium = 2 vCPU / 4 GiB RAM + 2 GiB swap).
+      - c7i-flex.large
+      - m7i-flex.large
+    Description: x86_64 EC2 instance type (c7i-flex.large / m7i-flex.large are Free-Plan eligible; t3.medium for standard Paid accounts).
   DailyGenerationCap:
     Type: Number
     Default: 10

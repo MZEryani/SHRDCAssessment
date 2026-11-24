@@ -196,12 +196,15 @@ function seedSecret({ secretName, region }) {
   }
 }
 
-function provisionStack({ stackName, region, secretName, budgetEmail, branch }) {
+function provisionStack({ stackName, region, secretName, budgetEmail, branch, instanceType }) {
   validateBranchName(branch)
   const paramOverrides = [
     `SecretName=${secretName}`,
     `RepoBranch=${branch}`,
   ]
+  if (instanceType) {
+    paramOverrides.push(`InstanceType=${instanceType}`)
+  }
   if (budgetEmail) {
     paramOverrides.push(`BudgetAlertEmail=${budgetEmail}`)
   }
@@ -366,6 +369,7 @@ async function main() {
   const stackName = flags.stack || DEFAULT_STACK_NAME
   const secretName = flags.secret || DEFAULT_SECRET_NAME
   const branch = flags.branch || 'main'
+  const instanceType = flags['instance-type'] || ''
   const budgetEmail = flags['budget-email'] || process.env.BUDGET_ALERT_EMAIL || ''
 
   switch (command) {
@@ -373,7 +377,7 @@ async function main() {
       seedSecret({ secretName, region })
       return
     case 'provision':
-      provisionStack({ stackName, region, secretName, budgetEmail, branch })
+      provisionStack({ stackName, region, secretName, budgetEmail, branch, instanceType })
       return
     case 'deploy':
       await deployViaSsm({ stackName, region, branch })
