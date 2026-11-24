@@ -28,8 +28,7 @@ export function validateOipCell({
   const oipDir = join(repoRoot, 'Open-Industry-Project')
   const cellDir = join(repoRoot, 'scenes', 'conveyor-cell')
   const contract = JSON.parse(readFileSync(join(repoRoot, 'openplc', 'io-contract.json'), 'utf8'))
-  const stSource = readFileSync(join(repoRoot, 'openplc', 'conveyor_cell.st'), 'utf8')
-  const sceneStSource = readFileSync(join(cellDir, 'plc', 'program.st'), 'utf8')
+  const stSource = readFileSync(join(cellDir, 'plc', 'program.st'), 'utf8')
   const modbusMaster = JSON.parse(
     readFileSync(join(repoRoot, 'openplc', 'conveyor_cell_modbus_master.json'), 'utf8'),
   )
@@ -48,19 +47,7 @@ export function validateOipCell({
     `✓ I/O Contract conformance verified: ${contract.signals.length} signals across ST, Modbus master, and OIP scene`,
   )
 
-  // 2. Verify scenes/conveyor-cell/plc/program.st stays identical to openplc/conveyor_cell.st
-  if (stSource !== sceneStSource) {
-    const drift = {
-      artifact: 'scenes/conveyor-cell/plc/program.st',
-      message:
-        'ST drift detected: scenes/conveyor-cell/plc/program.st differs from openplc/conveyor_cell.st',
-    }
-    error(drift.message)
-    return { ok: false, problems: [drift] }
-  }
-  log('✓ ST parity verified: scenes/conveyor-cell/plc/program.st matches openplc/conveyor_cell.st')
-
-  // 3. Run OIP's own strict CLI validators
+  // 2. Run OIP's own strict CLI validators
   runOipValidators({ oipDir, cellDir })
   return { ok: true, problems: [] }
 }

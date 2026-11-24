@@ -28,4 +28,4 @@ Read [`oip-cli-reference.md`](oip-cli-reference.md) when:
 
 ## Completion Criterion
 
-- `npm run oip:validate` exits `0` (1:1 `I/O Contract` match, ST parity, `validate-project --strict`, `check-st`, `check-wiring --strict`, and `check-layout --strict` all pass).
+- `npm run oip:validate` exits `0` (1:1 `I/O Contract` match, `validate-project --strict`, `check-st`, `check-wiring --strict`, and `check-layout --strict` all pass).

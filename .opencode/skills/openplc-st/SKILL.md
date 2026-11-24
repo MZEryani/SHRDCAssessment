@@ -12,7 +12,7 @@ Author IEC 61131-3 Structured Text (`ST`) for OpenPLC Runtime v4.1+ (`STruC++` c
 1. Read `openplc/io-contract.json` and `GLOSSARY.md` first. Every symbolic signal name and IEC address (`%IX`, `%QX`, `%QW`) must match the `I/O Contract` 1:1 and use Glossary terms.
 2. Put reusable control logic inside a `FUNCTION_BLOCK` (for scan-cycle unit testing) and wire located I/O in a top-level `PROGRAM` + `CONFIGURATION`.
 3. Place located `AT %IX` / `AT %QX` / `AT %QW` variables in their own dedicated `VAR ... END_VAR` block, separate from ordinary and function-block variables, so both `STruC++` and OIP's `check-st` accept the file identically.
-4. Keep `scenes/conveyor-cell/plc/program.st` byte-identical to `openplc/conveyor_cell.st`.
+4. Author the Conveyor Cell program directly in `scenes/conveyor-cell/plc/program.st` (the single authoritative ST source).
 5. Verify with `npm run plc:test` and (when OpenPLC Docker is up) `npm run plc:deploy:cell`.
 
 ## Required Control Semantics
@@ -30,4 +30,4 @@ Read [`strucpp-modbus-reference.md`](strucpp-modbus-reference.md) when packaging
 ## Completion Criterion
 
 - `npm run plc:test` passes with zero failures.
-- `openplc/conveyor_cell.st` and `scenes/conveyor-cell/plc/program.st` are identical and match `openplc/io-contract.json` 1:1.
+- `scenes/conveyor-cell/plc/program.st` and `openplc/conveyor_cell_modbus_master.json` match `openplc/io-contract.json` 1:1.

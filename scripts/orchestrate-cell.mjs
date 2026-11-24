@@ -28,7 +28,6 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 export const GREENFIELD_FILES = [
   'openplc/io-contract.json',
-  'openplc/conveyor_cell.st',
   'openplc/conveyor_cell_modbus_master.json',
   'scenes/conveyor-cell/plc/program.st',
   'scenes/conveyor-cell/scene.json',
@@ -40,7 +39,6 @@ export const WORKER_SPECS = [
     agent: 'plc-coder',
     expectedSkill: 'openplc-st',
     ownedFiles: [
-      'openplc/conveyor_cell.st',
       'openplc/conveyor_cell_modbus_master.json',
       'scenes/conveyor-cell/plc/program.st',
     ],
@@ -200,10 +198,9 @@ export function buildGreenfieldWorkerPrompt({ workerSpec, orchestratorBrief, rep
       `1. Call the skill tool to load "openplc-st" and also read ".opencode/skills/openplc-st/strucpp-modbus-reference.md".`,
       `2. Read openplc/io-contract.json, docs/cell-process-spec.md, GLOSSARY.md, and scripts/io-contract.mjs.`,
       `3. Author from scratch:`,
-      `   - openplc/conveyor_cell.st (FUNCTION_BLOCK ConveyorCellController with exact VAR_INPUT/VAR_OUTPUT names from openplc/io-contract.json and VAR CONSTANT matching parameters: BATCH_TARGET:=5, DWELL_TIME:=T#2s, JAM_THRESHOLD_TIME:=T#4s, SPAWN_PULSE_TIME:=T#500ms, SPAWN_COOLDOWN_TIME:=T#5s + PROGRAM ConveyorCellMain with located AT variables in their own VAR block and fail-safe NC boundary inversion EStop := NOT EStop when instantiating ConveyorCellController because EStop %IX0.2 is NC TRUE=released/FALSE=struck while ConveyorCellController uses active-high EStop + CONFIGURATION Config0 with INTERVAL := T#20ms task)`,
+      `   - scenes/conveyor-cell/plc/program.st (FUNCTION_BLOCK ConveyorCellController with exact VAR_INPUT/VAR_OUTPUT names from openplc/io-contract.json and VAR CONSTANT matching parameters: BATCH_TARGET:=5, DWELL_TIME:=T#2s, JAM_THRESHOLD_TIME:=T#4s, SPAWN_PULSE_TIME:=T#500ms, SPAWN_COOLDOWN_TIME:=T#5s + PROGRAM ConveyorCellMain with located AT variables in their own VAR block and fail-safe NC boundary inversion EStop := NOT EStop when instantiating ConveyorCellController because EStop %IX0.2 is NC TRUE=released/FALSE=struck while ConveyorCellController uses active-high EStop + CONFIGURATION Config0 with INTERVAL := T#20ms task)`,
       `   - openplc/conveyor_cell_modbus_master.json (derive directly from openplc/io-contract.json via scripts/io-contract.mjs deriveModbusMaster)`,
-      `   - scenes/conveyor-cell/plc/program.st (byte-identical copy of openplc/conveyor_cell.st)`,
-      `4. Self-heal (max 2 attempts): ${linkHint} Compile openplc/conveyor_cell.st with ".tools/strucpp/strucpp/strucpp openplc/conveyor_cell.st --debug -o /tmp/check_cell.cpp" and fix any errors.`,
+      `4. Self-heal (max 2 attempts): ${linkHint} Compile scenes/conveyor-cell/plc/program.st with ".tools/strucpp/strucpp/strucpp scenes/conveyor-cell/plc/program.st --debug -o /tmp/check_cell.cpp" and fix any errors.`,
       `5. Do NOT touch any files outside your owned scope. Reply with one concise summary sentence.`,
     ].join('\n')
   }
@@ -482,7 +479,6 @@ export async function runOrchestration({
         prompt: [
           `Post-merge verification failed in the integration worktree. Fix ONLY the failing files reported below so test:contract, plc:test, oip:validate, and test:e2e all pass.`,
           `Do NOT browse Open-Industry-Project/ or load skills; read only the specific failing file(s) and apply minimal targeted fixes.`,
-          `Keep openplc/conveyor_cell.st and scenes/conveyor-cell/plc/program.st byte-identical.`,
           `Run "npm run test:contract && npm run plc:test && npm run oip:validate" to confirm before finishing.`,
           '',
           failureSummary,

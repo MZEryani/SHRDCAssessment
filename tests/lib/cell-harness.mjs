@@ -192,7 +192,7 @@ export async function createModbusTestSession({
 export async function createCellHarness({
   contractPath = join(REPO_ROOT, 'openplc', 'io-contract.json'),
   scenePath = join(REPO_ROOT, 'scenes', 'conveyor-cell', 'scene.json'),
-  stPath = join(REPO_ROOT, 'openplc', 'conveyor_cell.st'),
+  stPath = join(REPO_ROOT, 'scenes', 'conveyor-cell', 'plc', 'program.st'),
   modbusMasterPath = join(REPO_ROOT, 'openplc', 'conveyor_cell_modbus_master.json'),
   runtimeUrl = DEFAULT_OPENPLC_URL,
   modbusPort,

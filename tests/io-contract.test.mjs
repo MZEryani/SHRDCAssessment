@@ -13,7 +13,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 function loadBaseline() {
   return {
     contract: JSON.parse(readFileSync(join(REPO_ROOT, 'openplc', 'io-contract.json'), 'utf8')),
-    stSource: readFileSync(join(REPO_ROOT, 'openplc', 'conveyor_cell.st'), 'utf8'),
+    stSource: readFileSync(join(REPO_ROOT, 'scenes', 'conveyor-cell', 'plc', 'program.st'), 'utf8'),
     modbusMaster: JSON.parse(
       readFileSync(join(REPO_ROOT, 'openplc', 'conveyor_cell_modbus_master.json'), 'utf8'),
     ),
@@ -86,7 +86,7 @@ describe('I/O Contract conformance checks', () => {
     )
     const addrProblems = checkConformance(addrDrift)
     assert.equal(addrProblems.length, 1)
-    assert.equal(addrProblems[0].artifact, 'conveyor_cell.st')
+    assert.equal(addrProblems[0].artifact, 'program.st')
     assert.match(addrProblems[0].message, /PhotoEye.*%IX0\.5.*%IX0\.4/)
 
     const typeDrift = structuredClone(baseline)
@@ -96,7 +96,7 @@ describe('I/O Contract conformance checks', () => {
     )
     const typeProblems = checkConformance(typeDrift)
     assert.equal(typeProblems.length, 1)
-    assert.equal(typeProblems[0].artifact, 'conveyor_cell.st')
+    assert.equal(typeProblems[0].artifact, 'program.st')
     assert.match(typeProblems[0].message, /Box_Count.*WORD.*INT/)
 
     const collision = structuredClone(baseline)
@@ -108,7 +108,7 @@ describe('I/O Contract conformance checks', () => {
     assert.ok(collisionProblems.length >= 1)
     assert.ok(
       collisionProblems.some(
-        (p) => p.artifact === 'conveyor_cell.st' && /PhotoEye.*%IX0\.0.*%IX0\.4/.test(p.message),
+        (p) => p.artifact === 'program.st' && /PhotoEye.*%IX0\.0.*%IX0\.4/.test(p.message),
       ),
       `Expected PhotoEye %IX0.0 collision finding, got: ${JSON.stringify(collisionProblems)}`,
     )
@@ -124,7 +124,7 @@ describe('I/O Contract conformance checks', () => {
     )
     const batchProblems = checkConformance(batchDrift)
     assert.equal(batchProblems.length, 1)
-    assert.equal(batchProblems[0].artifact, 'conveyor_cell.st')
+    assert.equal(batchProblems[0].artifact, 'program.st')
     assert.match(batchProblems[0].message, /BATCH_TARGET.*8.*5/)
 
     const dwellDrift = structuredClone(baseline)
@@ -134,7 +134,7 @@ describe('I/O Contract conformance checks', () => {
     )
     const dwellProblems = checkConformance(dwellDrift)
     assert.equal(dwellProblems.length, 1)
-    assert.equal(dwellProblems[0].artifact, 'conveyor_cell.st')
+    assert.equal(dwellProblems[0].artifact, 'program.st')
     assert.match(dwellProblems[0].message, /DWELL_TIME.*T#3s.*T#2s/)
 
     const jamDrift = structuredClone(baseline)
@@ -144,7 +144,7 @@ describe('I/O Contract conformance checks', () => {
     )
     const jamProblems = checkConformance(jamDrift)
     assert.equal(jamProblems.length, 1)
-    assert.equal(jamProblems[0].artifact, 'conveyor_cell.st')
+    assert.equal(jamProblems[0].artifact, 'program.st')
     assert.match(jamProblems[0].message, /JAM_THRESHOLD_TIME.*T#6s.*T#4s/)
 
     const scanDrift = structuredClone(baseline)
@@ -154,7 +154,7 @@ describe('I/O Contract conformance checks', () => {
     )
     const scanProblems = checkConformance(scanDrift)
     assert.equal(scanProblems.length, 1)
-    assert.equal(scanProblems[0].artifact, 'conveyor_cell.st')
+    assert.equal(scanProblems[0].artifact, 'program.st')
     assert.match(scanProblems[0].message, /scan interval.*T#50ms.*T#20ms/i)
   })
 
@@ -216,7 +216,6 @@ function makeTempCellFixture() {
   mkdirSync(join(root, 'scenes', 'conveyor-cell', 'plc'), { recursive: true })
   for (const rel of [
     join('openplc', 'io-contract.json'),
-    join('openplc', 'conveyor_cell.st'),
     join('openplc', 'conveyor_cell_modbus_master.json'),
     join('scenes', 'conveyor-cell', 'scene.json'),
     join('scenes', 'conveyor-cell', 'plc', 'program.st'),
@@ -263,25 +262,25 @@ describe('OIP validation CLI conformance gate', () => {
     assert.match(errors.join('\n'), /\[scene\.json\].*Role mismatch on spawner_1\.runTag/)
   })
 
-  it('fails before invoking OIP validators on ST AT drift, ST constant drift, Modbus io_points drift, or ST parity drift', () => {
+  it('fails before invoking OIP validators on ST AT drift, ST constant drift, or Modbus io_points drift', () => {
     const mutations = [
       {
         label: 'ST AT address drift',
         mutate: (root) => {
-          const stPath = join(root, 'openplc', 'conveyor_cell.st')
+          const stPath = join(root, 'scenes', 'conveyor-cell', 'plc', 'program.st')
           const src = readFileSync(stPath, 'utf8').replace('PhotoEye       AT %IX0.4', 'PhotoEye       AT %IX0.5')
           writeFileSync(stPath, src, 'utf8')
         },
-        expectedPattern: /\[conveyor_cell\.st\].*PhotoEye.*%IX0\.5/,
+        expectedPattern: /\[program\.st\].*PhotoEye.*%IX0\.5/,
       },
       {
         label: 'ST Batch constant drift',
         mutate: (root) => {
-          const stPath = join(root, 'openplc', 'conveyor_cell.st')
+          const stPath = join(root, 'scenes', 'conveyor-cell', 'plc', 'program.st')
           const src = readFileSync(stPath, 'utf8').replace('BATCH_TARGET        : INT  := 5;', 'BATCH_TARGET        : INT  := 7;')
           writeFileSync(stPath, src, 'utf8')
         },
-        expectedPattern: /\[conveyor_cell\.st\].*BATCH_TARGET.*7.*5/,
+        expectedPattern: /\[program\.st\].*BATCH_TARGET.*7.*5/,
       },
       {
         label: 'Modbus io_points drift',
@@ -292,14 +291,6 @@ describe('OIP validation CLI conformance gate', () => {
           writeFileSync(mbPath, JSON.stringify(cfg, null, 2), 'utf8')
         },
         expectedPattern: /\[modbus_master\.json\].*io_points/,
-      },
-      {
-        label: 'ST parity drift',
-        mutate: (root) => {
-          const sceneStPath = join(root, 'scenes', 'conveyor-cell', 'plc', 'program.st')
-          writeFileSync(sceneStPath, `${readFileSync(sceneStPath, 'utf8')}\n(* drifted *)\n`, 'utf8')
-        },
-        expectedPattern: /ST drift detected/,
       },
     ]
 

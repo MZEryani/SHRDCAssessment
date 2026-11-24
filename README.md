@@ -62,7 +62,7 @@ npm run verify:all
 | `npm run verify:offline` | Fast offline guardrail (`test:contract`, `plc:test`, `oip:validate`, `test:opencode`, `test:orchestrate`) |
 | `npm run test:contract` | Canonical `I/O Contract` schema & conformance across ST, Modbus master, and OIP scene |
 | `npm run plc:test` | 7/7 `STruC++` scan-cycle tests (`tests/conveyor_cell.test.st`) |
-| `npm run oip:validate` | 11/11 `I/O Contract` match, ST parity, and OIP strict project/ST/wiring/layout checks |
+| `npm run oip:validate` | 11/11 `I/O Contract` match and OIP strict project/ST/wiring/layout checks |
 | `npm run test:opencode` | `opencode debug config` / `agents` discovery, progressive-disclosure skills, `.gitignore` rules |
 | `npm run test:orchestrate` | NDJSON trace parsing, state-machine/preflight guards, 3-way `git worktree` merge, and proof invariants |
 | `npm run test:tracer` | Single-signal OpenPLC v4 ↔ OIP Modbus TCP tracer loop |
@@ -122,8 +122,8 @@ In `--from-scratch` mode, the pipeline probes live-callable models, creates a cl
 
 ## Repository Layout
 
-- `openplc/` — Canonical `I/O Contract` (`io-contract.json`), IEC 61131-3 ST (`conveyor_cell.st`), and Modbus TCP master config (`conveyor_cell_modbus_master.json`)
-- `scenes/conveyor-cell/` — Headless-authored OIP 3D Cell (`project.json`, `scene.json`, `plc/program.st`)
+- `openplc/` — Canonical `I/O Contract` (`io-contract.json`), Modbus TCP master config (`conveyor_cell_modbus_master.json`), and tracer artifacts (`tracer_*`)
+- `scenes/conveyor-cell/` — Headless-authored OIP 3D Cell (`project.json`, `scene.json`) and authoritative IEC 61131-3 ST program (`plc/program.st`)
 - `.opencode/skills/` — Progressive-disclosure domain skills (`openplc-st`, `oip-scene`, `plc-oip-verify`)
 - `.opencode/agents/` — Tiered agent definitions (`orchestrator`, `plc-coder`, `oip-builder`, `test-engineer`)
 - `scripts/` — Headless OpenPLC REST deployer (`openplc-deploy.mjs`), OIP Cell validator (`validate-oip-cell.mjs`), and parallel worktree orchestrator (`orchestrate-cell.mjs`)

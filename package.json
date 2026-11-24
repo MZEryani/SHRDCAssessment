@@ -6,7 +6,7 @@
   "description": "OpenPLC v4 + Open Industry Project Conveyor Cell integration and OpenCode multi-agent workflow",
   "scripts": {
     "plc:deploy": "node scripts/openplc-deploy.mjs",
-    "plc:deploy:cell": "node scripts/openplc-deploy.mjs openplc/conveyor_cell.st openplc/conveyor_cell_modbus_master.json",
+    "plc:deploy:cell": "node scripts/openplc-deploy.mjs scenes/conveyor-cell/plc/program.st openplc/conveyor_cell_modbus_master.json",
     "plc:test": "node scripts/plc-test.mjs",
     "oip:validate": "node scripts/validate-oip-cell.mjs",
     "oip:desktop": "node scripts/oip-desktop.mjs",

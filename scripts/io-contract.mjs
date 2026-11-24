@@ -95,12 +95,12 @@ function checkStDeclarations(contract, stSource, problems) {
     const found = stVars.get(sig.name)
     if (!found) {
       problems.push({
-        artifact: 'conveyor_cell.st',
+        artifact: 'program.st',
         message: `Missing located variable ${sig.name} AT ${sig.iecAddress} : ${sig.type}`,
       })
     } else if (found.iecAddress !== sig.iecAddress || found.type !== sig.type) {
       problems.push({
-        artifact: 'conveyor_cell.st',
+        artifact: 'program.st',
         message: `Signal ${sig.name} declared as AT ${found.iecAddress} : ${found.type}, contract requires ${sig.iecAddress} : ${sig.type}`,
       })
     }
@@ -109,7 +109,7 @@ function checkStDeclarations(contract, stSource, problems) {
   for (const [name, decl] of stVars) {
     if (!contractNames.has(name)) {
       problems.push({
-        artifact: 'conveyor_cell.st',
+        artifact: 'program.st',
         message: `Unexpected located variable ${name} AT ${decl.iecAddress} : ${decl.type} not present in I/O Contract`,
       })
     }
@@ -130,7 +130,7 @@ function checkStParameters(contract, stSource, problems) {
     const match = rx.exec(stSource)
     if (!match) {
       problems.push({
-        artifact: 'conveyor_cell.st',
+        artifact: 'program.st',
         message: `Missing constant ${name}`,
       })
       continue
@@ -139,7 +139,7 @@ function checkStParameters(contract, stSource, problems) {
     const actual = kind === 'time' ? parseIecTimeMs(raw) : Number(raw)
     if (actual !== expected) {
       problems.push({
-        artifact: 'conveyor_cell.st',
+        artifact: 'program.st',
         message: `Constant ${name} is ${raw}, contract requires ${kind === 'time' ? formatIecTime(expected) : expected}`,
       })
     }
@@ -148,12 +148,12 @@ function checkStParameters(contract, stSource, problems) {
   const taskMatch = /TASK\s+\w+\s*\(\s*INTERVAL\s*:=\s*([^,)]+)/.exec(stSource)
   if (!taskMatch) {
     problems.push({
-      artifact: 'conveyor_cell.st',
+      artifact: 'program.st',
       message: `Missing TASK scan interval declaration (contract requires ${formatIecTime(contract.parameters.scanIntervalMs)})`,
     })
   } else if (parseIecTimeMs(taskMatch[1]) !== contract.parameters.scanIntervalMs) {
     problems.push({
-      artifact: 'conveyor_cell.st',
+      artifact: 'program.st',
       message: `Task scan interval is ${taskMatch[1].trim()}, contract requires ${formatIecTime(contract.parameters.scanIntervalMs)}`,
     })
   }

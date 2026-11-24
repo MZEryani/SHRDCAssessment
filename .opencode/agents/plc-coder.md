@@ -18,6 +18,5 @@ Load the `openplc-st` skill before editing any PLC files and satisfy its complet
 
 ## Owned Scope
 
-- `openplc/conveyor_cell.st`
 - `openplc/conveyor_cell_modbus_master.json`
 - `scenes/conveyor-cell/plc/program.st`

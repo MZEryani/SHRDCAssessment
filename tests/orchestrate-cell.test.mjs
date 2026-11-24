@@ -385,7 +385,8 @@ describe('Parallel git worktree orchestration pipeline', () => {
         assert.equal(existsSync(join(base.baseWorktreePath, 'contract.json')), false)
         assert.equal(existsSync(join(base.baseWorktreePath, 'plc.st')), false)
         assert.equal(existsSync(join(base.baseWorktreePath, 'README.md')), true)
-        assert.ok(GREENFIELD_FILES.includes('openplc/conveyor_cell.st'))
+        assert.ok(GREENFIELD_FILES.includes('scenes/conveyor-cell/plc/program.st'))
+        assert.equal(GREENFIELD_FILES.includes('openplc/conveyor_cell.st'), false)
 
         // Simulate worker branched from main authoring plc.st and merging cleanly onto greenfield base
         const workerWt = join(tempDir, 'wt-plc')
@@ -447,6 +448,8 @@ describe('Parallel git worktree orchestration pipeline', () => {
       orchestratorBrief: 'BRIEF',
       repoRoot: '/tmp/custom-repo',
     })
+    assert.match(plcPrompt, /scenes\/conveyor-cell\/plc\/program\.st/)
+    assert.doesNotMatch(plcPrompt, /openplc\/conveyor_cell\.st/)
     assert.match(plcPrompt, /\bderiveModbusMaster\b/)
     assert.doesNotMatch(plcPrompt, /deriveModbusMasterConfig/)
     assert.match(plcPrompt, /ConveyorCellMain/)

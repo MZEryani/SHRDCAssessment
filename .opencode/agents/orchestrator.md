@@ -21,4 +21,4 @@ You are the lead automation architect for the OpenPLC Runtime v4 + OIP Conveyor 
    - `plc-coder` (`openplc-st`)
    - `oip-builder` (`oip-scene`)
    - `test-engineer` (`plc-oip-verify`)
-4. Merge worker branches cleanly, resolve any `I/O Contract` or ST parity drift, and verify all gates (`npm run plc:test`, `npm run oip:validate`, `npm run test:tracer`, `npm run test:e2e`).
+4. Merge worker branches cleanly, resolve any `I/O Contract` drift, and verify all gates (`npm run plc:test`, `npm run oip:validate`, `npm run test:tracer`, `npm run test:e2e`).
