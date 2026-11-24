@@ -84,15 +84,30 @@ export function validateBranchName(branch) {
   return branch
 }
 
-export function buildSsmDeployCommands({ branch = 'main' } = {}) {
+export function validateDomainName(domain) {
+  if (typeof domain !== 'string' || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domain)) {
+    throw new Error(`Invalid domain name: ${domain}`)
+  }
+  return domain
+}
+
+export function buildSsmDeployCommands({ branch = 'main', domain = '' } = {}) {
   validateBranchName(branch)
+  const domainStep = domain
+    ? [
+        `printf '%s\\n' '${validateDomainName(domain)}' > /etc/shrdc-domain`,
+        `sed -i "s/^DEMO_DOMAIN=.*/DEMO_DOMAIN=${domain}/" /opt/shrdc-assessment/.env.runtime || true`,
+      ]
+    : []
   return [
     'set -euo pipefail',
     'cd /opt/shrdc-assessment',
     `git fetch origin -- ${branch}`,
     `git reset --hard origin/${branch}`,
+    ...domainStep,
     '/usr/local/bin/shrdc-refresh-env',
-    'docker compose --env-file .env.runtime -f docker-compose.ec2.yml up -d --build demo-portal',
+    ...(domain ? [`sed -i "s/^DEMO_DOMAIN=.*/DEMO_DOMAIN=${domain}/" /opt/shrdc-assessment/.env.runtime`] : []),
+    'docker compose --env-file .env.runtime -f docker-compose.ec2.yml up -d --build demo-portal caddy',
     'docker compose --env-file .env.runtime -f docker-compose.ec2.yml ps',
   ]
 }
@@ -196,7 +211,7 @@ function seedSecret({ secretName, region }) {
   }
 }
 
-function provisionStack({ stackName, region, secretName, budgetEmail, branch, instanceType }) {
+function provisionStack({ stackName, region, secretName, budgetEmail, branch, instanceType, domain }) {
   validateBranchName(branch)
   const paramOverrides = [
     `SecretName=${secretName}`,
@@ -204,6 +219,9 @@ function provisionStack({ stackName, region, secretName, budgetEmail, branch, in
   ]
   if (instanceType) {
     paramOverrides.push(`InstanceType=${instanceType}`)
+  }
+  if (domain) {
+    paramOverrides.push(`CustomDomain=${validateDomainName(domain)}`)
   }
   if (budgetEmail) {
     paramOverrides.push(`BudgetAlertEmail=${budgetEmail}`)
@@ -232,13 +250,13 @@ function provisionStack({ stackName, region, secretName, budgetEmail, branch, in
   }
 }
 
-async function deployViaSsm({ stackName, region, branch }) {
+async function deployViaSsm({ stackName, region, branch, domain }) {
   const outputs = getStackOutputs({ stackName, region })
   const instanceId = outputs.InstanceId
   if (!instanceId) {
     throw new Error(`Stack "${stackName}" does not expose InstanceId output`)
   }
-  const commands = buildSsmDeployCommands({ branch })
+  const commands = buildSsmDeployCommands({ branch, domain })
   console.log(`[aws] Sending SSM redeploy command to ${instanceId} (branch: ${branch})...`)
   const sendJson = runAws(
     [
@@ -370,6 +388,7 @@ async function main() {
   const secretName = flags.secret || DEFAULT_SECRET_NAME
   const branch = flags.branch || 'main'
   const instanceType = flags['instance-type'] || ''
+  const domain = flags.domain || ''
   const budgetEmail = flags['budget-email'] || process.env.BUDGET_ALERT_EMAIL || ''
 
   switch (command) {
@@ -377,10 +396,10 @@ async function main() {
       seedSecret({ secretName, region })
       return
     case 'provision':
-      provisionStack({ stackName, region, secretName, budgetEmail, branch, instanceType })
+      provisionStack({ stackName, region, secretName, budgetEmail, branch, instanceType, domain })
       return
     case 'deploy':
-      await deployViaSsm({ stackName, region, branch })
+      await deployViaSsm({ stackName, region, branch, domain })
       return
     case 'stop':
       stopInstance({ stackName, region })

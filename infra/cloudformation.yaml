@@ -46,6 +46,12 @@ Parameters:
     AllowedPattern: '^$|^[^@\s]+@[^@\s]+\.[^@\s]+$'
     ConstraintDescription: Must be empty or a valid email address.
     Description: Optional email address for a $15/month AWS Budget alert (leave empty to skip creating the budget).
+  CustomDomain:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+    ConstraintDescription: Must be empty (uses <eip>.sslip.io) or a lowercase DNS hostname (e.g. shrdc-demo.duckdns.org).
+    Description: Optional custom hostname pointing to the Elastic IP (defaults to <ElasticIp>.sslip.io when empty).
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
@@ -53,6 +59,7 @@ Parameters:
 
 Conditions:
   HasBudgetEmail: !Not [!Equals [!Ref BudgetAlertEmail, '']]
+  HasCustomDomain: !Not [!Equals [!Ref CustomDomain, '']]
 
 Resources:
   DemoVpc:
@@ -243,10 +250,17 @@ Resources:
           DEMO_TOKEN="$(printf '%s' "$SECRET_JSON" | jq -er '.DEMO_ACCESS_TOKEN | select(type=="string" and length>0)')"
           PLC_PASS="$(printf '%s' "$SECRET_JSON" | jq -er '.OPENPLC_PASSWORD | select(type=="string" and length>0)')"
           GEMINI_KEY="$(printf '%s' "$SECRET_JSON" | jq -r '.GEMINI_API_KEY // ""')"
+          DOMAIN_VALUE="${CustomDomain}"
+          if [ -f /etc/shrdc-domain ]; then
+            DOMAIN_VALUE="$(tr -d '[:space:]' < /etc/shrdc-domain)"
+          fi
+          if [ -z "$DOMAIN_VALUE" ]; then
+            DOMAIN_VALUE="${DemoElasticIP}.sslip.io"
+          fi
           umask 077
           TMP_ENV="/opt/shrdc-assessment/.env.runtime.tmp"
           {
-            printf 'DEMO_DOMAIN=%s\n' "${DemoElasticIP}.sslip.io"
+            printf 'DEMO_DOMAIN=%s\n' "$DOMAIN_VALUE"
             printf 'DAILY_GENERATION_CAP=%s\n' "${DailyGenerationCap}"
             printf 'FORCE_SECURE_COOKIES=1\n'
             printf 'DEMO_ACCESS_TOKEN=%s\n' "$DEMO_TOKEN"
@@ -309,8 +323,8 @@ Outputs:
     Description: Permanent Elastic IPv4 address attached to the EC2 instance
     Value: !Ref DemoElasticIP
   DemoUrl:
-    Description: Automatic HTTPS URL served by Caddy via sslip.io
-    Value: !Sub 'https://${DemoElasticIP}.sslip.io'
+    Description: Automatic HTTPS URL served by Caddy (CustomDomain when set, otherwise sslip.io)
+    Value: !If [HasCustomDomain, !Sub 'https://${CustomDomain}', !Sub 'https://${DemoElasticIP}.sslip.io']
   SsmSessionCommand:
     Description: Interactive shell access via AWS Systems Manager Session Manager (no SSH port 22)
     Value: !Sub 'aws ssm start-session --target ${DemoInstance} --region ${AWS::Region}'
