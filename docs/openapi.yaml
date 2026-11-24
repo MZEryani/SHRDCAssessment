@@ -1,0 +1,548 @@
+openapi: 3.1.0
+info:
+  title: SHRDC Assessment — OpenPLC v4 + OIP Demo Portal API
+  version: 1.0.0
+  description: >
+    HTTP and Server-Sent Events (SSE) API exposed by the containerized Demo Portal
+    (`portal/server.mjs`). Authenticates visitors via a magic link (`GET /?token=...`)
+    or passphrase login (`POST /auth/login`), serves unmodified Open Industry Project (OIP)
+    3D web assets under Cross-Origin Isolation (`COOP`/`COEP`), compiles and deploys
+    Structured Text programs to OpenPLC Runtime v4, and streams 4-stage OpenCode
+    multi-agent Cell generation progress.
+
+    **WebSocket Bridge (`/ws/modbus`):** Authenticated browser OIP tabs upgrade to
+    `wss://<host>/ws/modbus` (same `shrdc_demo_session` HttpOnly cookie, strict
+    single-session 30-minute lease). In Edge Mirror mode (`mirror: true`), `demo-portal`
+    answers OpenPLC Modbus TCP polls (`:5020`) locally in `< 1 ms`, pushes actuator
+    writes on change (with a 400 ms heartbeat), and receives browser change-of-value
+    sensor updates (`input_update`).
+servers:
+  - url: https://shrdc-demo.duckdns.org
+    description: Live Amazon EC2 deployment (Caddy HTTPS -> demo-portal)
+  - url: http://localhost:8080
+    description: Local 3-container Docker Compose stack
+security:
+  - sessionCookie: []
+tags:
+  - name: Authentication
+    description: Passphrase and magic-link session cookie endpoints
+  - name: Runtime & Status
+    description: Live OpenPLC Runtime v4, Modbus bridge, and generator telemetry
+  - name: Cells
+    description: Inspect, deploy, load into OIP 3D, and manage generated Cells
+  - name: AI Cell Generator
+    description: Plain-English OpenCode multi-agent Cell generation (SSE-streamed)
+paths:
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Sign in with demo access passphrase
+      description: >
+        Accepts either `application/json` (`{"token":"..."}`) or
+        `application/x-www-form-urlencoded` (`token=...`). Sets an `HttpOnly`,
+        `SameSite=Lax` (and `Secure` over HTTPS) `shrdc_demo_session` cookie.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: Demo access passphrase
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        '200':
+          description: Authenticated (JSON client)
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+        '302':
+          description: Authenticated (HTML form client, redirects to `/`)
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /
+            Set-Cookie:
+              schema:
+                type: string
+        '400':
+          description: Malformed JSON request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid passphrase
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/status:
+    get:
+      tags: [Runtime & Status]
+      summary: Get live OpenPLC, Modbus bridge, and generator telemetry
+      responses:
+        '200':
+          description: Live system status snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/cells:
+    get:
+      tags: [Cells]
+      summary: List available Cells
+      description: >
+        Returns the protected baseline `conveyor-cell` plus any AI-generated Cells
+        persisted in `PORTAL_CELLS_DIR`.
+      responses:
+        '200':
+          description: List of Cells
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cells]
+                properties:
+                  cells:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CellSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/cells/{slug}:
+    get:
+      tags: [Cells]
+      summary: Inspect a Cell's Structured Text, I/O Contract, and Modbus master config
+      parameters:
+        - $ref: '#/components/parameters/CellSlug'
+      responses:
+        '200':
+          description: Full Cell inspection bundle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CellDetails'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Cells]
+      summary: Delete a generated Cell
+      description: >
+        Removes an AI-generated Cell from `PORTAL_CELLS_DIR`. The baseline
+        `conveyor-cell` is protected and always returns `403`.
+      parameters:
+        - $ref: '#/components/parameters/CellSlug'
+      responses:
+        '200':
+          description: Cell deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  deleted:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Protected baseline Cell cannot be deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/cells/{slug}/deploy:
+    post:
+      tags: [Cells]
+      summary: Compile and deploy a Cell's PLC program to OpenPLC Runtime v4
+      description: >
+        Packages `plc/program.st` and `plc/modbus_master.json` (overriding
+        `OIP_MODBUS_HOST` in memory without mutating disk), uploads via OpenPLC v4
+        REST API, compiles with STruC++, and starts the PLC scan cycle.
+      parameters:
+        - $ref: '#/components/parameters/CellSlug'
+      responses:
+        '200':
+          description: Compiled and started on OpenPLC Runtime v4
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeployResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: OpenPLC Runtime URL is not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/cells/{slug}/oip-folder:
+    get:
+      tags: [Cells]
+      summary: Fetch read-only OIP project folder bundle
+      description: >
+        Consumed by `window.oipProject` in `/oip-bridge.js` to auto-load `project.json`,
+        `scene.json`, `parts/*`, and `plc/program.st` into unmodified browser OIP.
+      parameters:
+        - $ref: '#/components/parameters/CellSlug'
+      responses:
+        '200':
+          description: Read-only OIP folder bundle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OipFolderBundle'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/generate:
+    post:
+      tags: [AI Cell Generator]
+      summary: Start a 4-stage OpenCode multi-agent Cell generation run
+      description: >
+        Launches asynchronous Cell generation (Stage 1 I/O Contract + OIP Catalog Gate,
+        Stage 2 3 parallel `git worktree` workers, Stage 3 merge, Stage 4 3-gate
+        verification). Enforces single-flight execution (`409`) and daily UTC cap (`429`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt:
+                  type: string
+                  description: Plain-English description of the desired automation Cell
+                  example: >
+                    A belt conveyor with a box spawner, a despawner, Start, Stop, and
+                    NC E-Stop push buttons, a Photo-Eye, and a blade stop just after
+                    the Photo-Eye that holds each box for 2 seconds before releasing it.
+                name:
+                  type: string
+                  description: Optional Cell slug (`[a-z0-9-]`); auto-derived if omitted
+                  example: blade-stop-inspector
+      responses:
+        '202':
+          description: Generation started; subscribe to `/api/generate/events` for live SSE progress
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: integer
+                    example: 202
+                  slug:
+                    type: string
+                  jobId:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Cannot overwrite protected baseline `conveyor-cell`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Another generation is already running or Cell slug already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Daily UTC generation cap reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Live generation disabled (`PORTAL_CELLS_DIR` unset)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/generate/events:
+    get:
+      tags: [AI Cell Generator]
+      summary: Subscribe to live Server-Sent Events (SSE) for Cell generation
+      description: >
+        Streams `text/event-stream` snapshots and stage events (`stage1`, `stage2`,
+        `stage3`, `stage4`, `stage4_repair`, `complete`, `error`) with non-buffered
+        Caddy flushing.
+      responses:
+        '200':
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/proof:
+    get:
+      tags: [AI Cell Generator]
+      summary: Retrieve committed Task 2 multi-agent execution proof
+      responses:
+        '200':
+          description: Committed Markdown summary and structured JSON trace
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [markdown, json]
+                properties:
+                  markdown:
+                    type: string
+                  json:
+                    type: object
+                    additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: shrdc_demo_session
+      description: >
+        Signed HttpOnly session cookie issued by `POST /auth/login` or magic link
+        `GET /?token=<DEMO_ACCESS_TOKEN>`.
+
+  parameters:
+    CellSlug:
+      name: slug
+      in: path
+      required: true
+      description: Cell identifier slug (lowercase alphanumeric and hyphens)
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]*$'
+        example: conveyor-cell
+
+  responses:
+    BadRequest:
+      description: Invalid request or slug parameter
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid `shrdc_demo_session` cookie
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    StatusResponse:
+      type: object
+      required: [ok, openplc, bridge, generation, events]
+      properties:
+        ok:
+          type: boolean
+        openplc:
+          type: object
+          properties:
+            reachable:
+              type: boolean
+            version:
+              type: [string, 'null']
+            plcStatus:
+              type: [string, 'null']
+            activeCell:
+              type: [string, 'null']
+            lastDeployedAt:
+              type: [string, 'null']
+              format: date-time
+        bridge:
+          type: object
+          properties:
+            locked:
+              type: boolean
+            activeMasters:
+              type: integer
+            polls:
+              type: integer
+            leaseRemainingMs:
+              type: integer
+        generation:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            running:
+              type: boolean
+            quota:
+              type: object
+              properties:
+                used:
+                  type: integer
+                limit:
+                  type: integer
+                remaining:
+                  type: integer
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              at:
+                type: string
+                format: date-time
+              message:
+                type: string
+
+    CellSummary:
+      type: object
+      required: [slug, protected]
+      properties:
+        slug:
+          type: string
+        title:
+          type: string
+        protected:
+          type: boolean
+        signalCount:
+          type: integer
+        createdAt:
+          type: [string, 'null']
+          format: date-time
+
+    CellDetails:
+      type: object
+      required: [slug, stSource, ioContract]
+      properties:
+        slug:
+          type: string
+        protected:
+          type: boolean
+        stSource:
+          type: string
+        ioContract:
+          type: object
+          additionalProperties: true
+        modbusMaster:
+          type: [object, 'null']
+          additionalProperties: true
+        processSpec:
+          type: [string, 'null']
+        report:
+          type: [object, 'null']
+          additionalProperties: true
+
+    DeployResponse:
+      type: object
+      required: [ok, slug, plcStatus, launchUrl]
+      properties:
+        ok:
+          type: boolean
+        slug:
+          type: string
+        version:
+          type: string
+        md5:
+          type: string
+        compilationStatus:
+          type: string
+        plcStatus:
+          type: string
+          example: STATUS:RUNNING
+        launchUrl:
+          type: string
+          example: /app/?cell=conveyor-cell
+
+    OipFolderBundle:
+      type: object
+      required: [docId, root, signature, files]
+      properties:
+        docId:
+          type: string
+        root:
+          type: string
+        signature:
+          type: string
+        files:
+          type: array
+          items:
+            type: object
+            required: [path, content]
+            properties:
+              path:
+                type: string
+              content:
+                type: string
