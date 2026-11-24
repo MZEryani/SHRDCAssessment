@@ -294,6 +294,8 @@ describe('Parallel git worktree orchestration primitives', () => {
         workerSpec,
         orchestratorBrief: 'BRIEF',
         repoRoot: '/tmp/repo',
+        contractJson: JSON.stringify(makeValidContract('color-sorter')),
+        specText: '# Color Sorter',
       })
       assert.match(prompt, /scenes\/color-sorter\/io-contract\.json/)
       assert.doesNotMatch(prompt, /ConveyorCell|BATCH_TARGET|belt_1|0\.35,1\.25,0|PhotoEye/)

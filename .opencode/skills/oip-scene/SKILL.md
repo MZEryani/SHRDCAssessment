@@ -17,8 +17,8 @@ Construct valid, Modbus-ready Open Industry Project (`OIP`) v4 Cell folders head
    ```json
    "plcs": [{ "name": "PLC1", "runsOn": "plc", "protocol": "serve", "connect": true }]
    ```
-6. Ensure `scenes/<slug>/project.json` lists `"program": ["plc/program.st"]`.
-7. Self-heal (max 2 attempts): run `validate-project --strict`, `check-wiring --strict`, and `check-layout` against `"$PWD/scenes/<slug>"` and fix any errors.
+6. Ensure `scenes/<slug>/project.json` lists `"program": ["plc/program.st"]` and `"tests": []` (remove any `tests/starter.test.json` entry added by `add-part --scaffold`).
+7. Self-heal (max 2 attempts): run `validate-project --strict` and `check-layout` against `"$PWD/scenes/<slug>"` and fix any errors (`check-st` and `check-wiring --strict` run post-merge once `plc/program.st` is merged).
 
 ## Core Part Rules
 
@@ -33,4 +33,4 @@ Read [`oip-cli-reference.md`](oip-cli-reference.md) for exact `add-part`, `snap-
 ## Completion Criterion
 
 - `scenes/<slug>/project.json`, `scenes/<slug>/scene.json` (version 4 with `"plcs"` auto-serve), and `scenes/<slug>/parts/` exist and match every `sceneRole` in `scenes/<slug>/io-contract.json` 1:1.
-- `validate-project --strict`, `check-wiring --strict`, and `check-layout` (zero errors) all exit `0`.
+- `validate-project --strict` and `check-layout` (zero errors) both exit `0`.

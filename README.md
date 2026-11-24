@@ -12,12 +12,12 @@ flowchart LR
     Contract -.-> OIP
   end
 
-  subgraph Task2["Task 2: OpenCode Parallel Worktree Pipeline"]
-    Spec["Plain-English Spec\ndocs/cell-process-spec.md"] --> Orch["Orchestrator\n(Reasoning Tier)"]
+  subgraph Task2["Task 2: Plain-English -> OpenPLC + OIP Cell Generator"]
+    Spec["Plain-English Prompt\n(CLI / --prompt / --spec)"] --> Orch["Orchestrator\n(Reasoning Tier)\nStage 1 + Live OIP Catalog Gate"]
     Orch --> W1["plc-coder\n(Flash Tier, worktree)\nopenplc-st skill"]
     Orch --> W2["oip-builder\n(Flash Tier, worktree)\noip-scene skill"]
     Orch --> W3["test-engineer\n(Flash Tier, worktree)\nplc-oip-verify skill"]
-    W1 & W2 & W3 --> Merge["Integration Branch\n(0 conflicts) + All Gates"]
+    W1 & W2 & W3 --> Merge["Clean Merge + cell:verify\n-> scenes/<slug>/"]
   end
 ```
 
@@ -28,6 +28,7 @@ flowchart LR
   - [ADR 0001 — OIP as Modbus TCP Server, OpenPLC as Master](docs/adr/0001-oip-modbus-server-openplc-master.md)
   - [ADR 0002 — Headless STruC++ Compilation & REST Deployment](docs/adr/0002-headless-strucpp-rest-deploy.md)
   - [ADR 0003 — Local macOS Desktop + Docker Demo Over Cloud VM](docs/adr/0003-local-desktop-docker-demo-over-cloud-vm.md)
+  - [ADR 0004 — Self-Contained Per-Cell Folders and Stage 1 Contract Seam](docs/adr/0004-self-contained-cells-and-stage1-contract-seam.md)
 - **Canonical I/O Contract & Process Spec:** [openplc/io-contract.json](openplc/io-contract.json), [docs/cell-process-spec.md](docs/cell-process-spec.md)
 - **Captured Task 2 Execution Proof:** [docs/orchestration-proof.md](docs/orchestration-proof.md) ([JSON trace](docs/orchestration-proof.json))
 
@@ -67,6 +68,8 @@ npm run verify:all
 | `npm run test:orchestrate` | NDJSON trace parsing, state-machine/preflight guards, 3-way `git worktree` merge, and proof invariants |
 | `npm run test:tracer` | Single-signal OpenPLC v4 ↔ OIP Modbus TCP tracer loop |
 | `npm run test:e2e` | Live OpenPLC v4 Docker ↔ OIP `SimWorld` 5-box Batch + anti-touching spacing E2E |
+| `npm run cell:verify -- <slug>` | Generic 3-gate verifier for any Cell (`checkConformance`, `STruC++ --test`, OIP strict validators + error-only `check-layout`) |
+| `npm run cell:run -- <slug>` | Generic deployer + OIP Desktop launcher for any Cell (honors `OPENPLC_URL` and `OIP_MODBUS_HOST` env overrides) |
 | `npm run hooks:install` | Enable local `.githooks/pre-commit` offline guardrail |
 
 ## Live OpenPLC + OIP Desktop 3D Demo Walkthrough
@@ -96,29 +99,54 @@ npm run verify:all
 - [ ] Show `opencode debug agents --standalone` (tiered Orchestrator vs. 3 skill-scoped workers)
 - [ ] Show [docs/orchestration-proof.md](docs/orchestration-proof.md) (concurrent worktree overlap, 0 merge conflicts, per-agent skill scoping, tiered token/cost breakdown, and post-merge E2E pass)
 
-## Task 2: OpenCode Multi-Agent Parallel `git worktree` Workflow
+## Task 2: Plain-English → OpenPLC + OIP Cell Generator
 
-Inspect discovered agents, configuration sources, and live-callable model tiers:
+Describe any OIP-supported factory automation **Cell** in plain English and generate a self-contained, verified OpenPLC Structured Text program + OIP v4 3D simulation under `scenes/<slug>/`:
+
+```bash
+# Interactive terminal prompt (asks for plain-English description + optional slug)
+npm run generate
+
+# Non-interactive plain-English prompt (with live model preflight)
+npm run generate -- --preflight --name color-sorter \
+  --prompt "A roller conveyor cell with a box spawner, a color sensor, a diverter that pushes red (color code 1) boxes off into a side reject despawner while letting other boxes pass to an end despawner, Start/Stop push buttons, and a stack light."
+
+# Generate from a Markdown process specification file
+npm run generate -- --preflight --name conveyor-cell-gen --spec docs/cell-process-spec.md
+
+# Cheap Stage-1-only dry run (synthesizes & validates I/O Contract + Modbus master only)
+npm run generate -- --stage1-only --name dry-run-cell --prompt "A belt conveyor with start/stop buttons and a photo eye"
+```
+
+Optional flags: `--orchestrator-model <m>`, `--worker-model <m>`, `--preflight`, `--stage1-only`, `--deploy`, `--open`, `--verify-live`, `--force`. (`npm run orchestrate` is retained as an alias for `npm run generate`.)
+
+### Verify & Run Any Generated Cell
+
+```bash
+# Run all 3 generic offline gates (I/O Contract conformance, STruC++ unit tests, OIP validators)
+npm run cell:verify -- color-sorter
+
+# Deploy to OpenPLC Runtime v4 (Docker) and launch OIP Desktop
+npm run cell:run -- color-sorter
+
+# EC2 / remote runtime overrides (optional)
+OPENPLC_URL=https://<host>:8443 OIP_MODBUS_HOST=<oip-ip> npm run cell:run -- color-sorter --deploy-only
+```
+
+### How the Multi-Agent Pipeline Works
+
+1. **Preflight (`--preflight`):** `npm run opencode:probe` probes live-callable tiered models (`google/gemini-4-neon` / `google/gemini-3.1-pro-preview` orchestrator vs. `google/gemini-3.8-flash` workers) with a 12s per-model timeout and fail-fast HTTP `429`/`503` retry guard.
+2. **Stage 1 (Orchestrator + Live OIP Catalog Gate):** Reads OIP's live part catalog (`npm --prefix Open-Industry-Project run catalog -- --json`), synthesizes `scenes/<slug>/io-contract.json` (freezing `plc.functionBlockName`, `plc.programName`, signals, and `sceneRole`) and `scenes/<slug>/process-spec.md`, validates schema + catalog alignment (max 1 fast repair; fails fast on unsupported hardware), and deterministically derives `scenes/<slug>/plc/modbus_master.json`.
+3. **Stage 2 (3 Parallel Isolated `git worktree` Workers):** Dispatches `plc-coder` (`openplc-st`), `oip-builder` (`oip-scene`), and `test-engineer` (`plc-oip-verify`) concurrently in isolated git worktrees with least-privilege skill scoping and zero Conveyor-Cell prompt leakage.
+4. **Stage 3 & 4 (Clean Merge + Generic 3-Gate Verification + Persistence):** Merges all three worker branches with 0 conflicts, runs `cell:verify` (max 1 targeted orchestrator repair pass), persists the runnable Cell to `scenes/<slug>/` alongside `generation-report.{md,json}`, and cleans up all temporary worktrees/branches while protecting Task 1's `scenes/conveyor-cell/` from overwrite.
+
+Inspect discovered agents and live-callable model tiers anytime:
 
 ```bash
 opencode debug config --standalone
 opencode debug agents --standalone
 npm run opencode:probe
 ```
-
-Execute the end-to-end orchestration pipeline from [docs/cell-process-spec.md](docs/cell-process-spec.md):
-
-```bash
-# Paid-tier greenfield generation in isolated worktrees (leaves main untouched)
-npm run orchestrate -- --preflight --from-scratch
-
-# Or fast verification mode against existing artifacts (with optional Free Tier model overrides)
-npm run orchestrate -- \
-  --orchestrator-model google/gemini-3-flash-preview \
-  --worker-model google/gemini-flash-lite-latest
-```
-
-In `--from-scratch` mode, the pipeline probes live-callable models, creates a clean isolated base worktree (leaving `main` untouched), runs the frontier Orchestrator to synthesize `openplc/io-contract.json` and a dispatch brief, launches `plc-coder` (`openplc-st`), `oip-builder` (`oip-scene`), and `test-engineer` (`plc-oip-verify`) concurrently in isolated OpenCode `--worktree` directories with in-worktree self-healing, merges their disjoint branches cleanly into an integration worktree (`0` conflicts), runs `test:contract`, `plc:test`, `oip:validate`, and live `test:e2e` (with a bounded Orchestrator post-merge repair pass if needed), cleans up all temporary worktrees/branches, and writes updated proof to [docs/orchestration-proof.md](docs/orchestration-proof.md) and [docs/orchestration-proof.json](docs/orchestration-proof.json).
 
 ## Repository Layout
 

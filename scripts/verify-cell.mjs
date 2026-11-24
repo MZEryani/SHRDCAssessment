@@ -79,10 +79,10 @@ export function extractLayoutWarnings(rawStdout) {
   }
 }
 
-function defaultRunOipValidators({ oipDir, cellDir }) {
+function defaultRunOipValidators({ oipDir, cellDir, stPath }) {
   const strictSteps = [
     ['run', 'validate-project', '--', cellDir, '--strict'],
-    ['run', 'check-st', '--', cellDir],
+    ['run', 'check-st', '--', stPath ?? join(cellDir, 'plc', 'program.st')],
     ['run', 'check-wiring', '--', cellDir, '--strict'],
   ]
 
@@ -187,7 +187,7 @@ export function verifyCell({
   }
 
   // Gate 3: OIP strict validators + pragmatic layout check
-  const oipValidate = runOipValidators({ oipDir: paths.oipDir, cellDir: paths.cellDir })
+  const oipValidate = runOipValidators({ oipDir: paths.oipDir, cellDir: paths.cellDir, stPath: paths.stPath })
   const warnings = oipValidate.warnings ?? []
   if (oipValidate.passed) {
     log(

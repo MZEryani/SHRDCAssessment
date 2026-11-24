@@ -84,7 +84,7 @@ export function buildStage1Prompt({ slug, promptText, workCwd, catalogSummary })
     `   - "plc": { "functionBlockName": "<ValidIecIdent>", "programName": "<ValidIecIdent>" } (distinct identifiers)`,
     `   - "modbus": { "topology": "oip-server-openplc-master", "oipHostForPlc": "host.docker.internal", "port": 5020, "slaveId": 1, "cycleTimeMs": 50 }`,
     `   - "parameters": { "scanIntervalMs": 20, ...optional tuning parameters }`,
-    `   - "signals": non-empty array where each signal has { name, iecAddress (%IXn.b|%IWn|%QXn.b|%QWn), type (BOOL for %IX/%QX; INT/WORD/DINT for %IW/%QW), direction ("oip_to_plc" for %I* / OIP dir:"out", "plc_to_oip" for %Q* / OIP dir:"in"), modbusArea ("discreteInput"|"inputRegister"|"coil"|"holdingRegister"), modbusAddress (byte*8+bit or word index), optional contact: "NC" for emergencyStop push buttons, sceneRole: { partId, param, packageId }, description }.`,
+    `   - "signals": non-empty array where each signal has { name, iecAddress (%IXn.b|%IWn|%QXn.b|%QWn), type (BOOL for %IX/%QX; INT/WORD for %IW/%QW — only wire BOOL and INT catalog signals over Modbus TCP; omit REAL/DINT optional tags like speedTag and use static part params instead), direction ("oip_to_plc" for %I* / OIP dir:"out", "plc_to_oip" for %Q* / OIP dir:"in"), modbusArea ("discreteInput"|"inputRegister"|"coil"|"holdingRegister"), modbusAddress (byte*8+bit or word index), optional contact: "NC" for emergencyStop push buttons, sceneRole: { partId, param, packageId }, description }.`,
     `2. "${specPath}" — concise Markdown documenting the process behavior, parts, signals, and every inferred default.`,
     '',
     `Then immediately reply with a concise 3-bullet dispatch brief (one bullet each for plc-coder, oip-builder, and test-engineer).`,
@@ -94,40 +94,52 @@ export function buildStage1Prompt({ slug, promptText, workCwd, catalogSummary })
   ].join('\n')
 }
 
-export function buildWorkerPrompt({ slug, workerSpec, orchestratorBrief, repoRoot }) {
-  const linkHint = `Local toolchains live at "${repoRoot}/.tools" and "${repoRoot}/Open-Industry-Project". If needed to run local validators inside your worktree, symlink them first (they are gitignored).`
+export function buildWorkerPrompt({
+  slug,
+  workerSpec,
+  orchestratorBrief,
+  repoRoot,
+  contractJson = '',
+  specText = '',
+}) {
+  const linkCmd = `ln -sfn "${repoRoot}/.tools" .tools && ln -sfn "${repoRoot}/Open-Industry-Project" Open-Industry-Project`
+  const contextBlock = [
+    `Orchestrator dispatch brief:\n${orchestratorBrief}`,
+    ...(contractJson
+      ? ['', `Frozen canonical I/O Contract (scenes/${slug}/io-contract.json):`, '```json', contractJson.trim(), '```']
+      : []),
+    ...(specText ? ['', `Process Specification (scenes/${slug}/process-spec.md):`, specText.trim()] : []),
+  ].join('\n')
 
   if (workerSpec.agent === 'plc-coder') {
     return [
-      `Orchestrator dispatch brief:\n${orchestratorBrief}`,
+      contextBlock,
       '',
       `1. Call the skill tool to load "openplc-st".`,
-      `2. Read "scenes/${slug}/io-contract.json", "scenes/${slug}/process-spec.md", and "GLOSSARY.md".`,
-      `3. Author "scenes/${slug}/plc/program.st" matching the frozen plc.functionBlockName, plc.programName, all located AT signals (in their own dedicated VAR block), NC boundary inversion for any contact:"NC" signal, and TASK INTERVAL matching parameters.scanIntervalMs.`,
-      `4. Self-heal (max 2 attempts): ${linkHint} Compile "scenes/${slug}/plc/program.st" with ".tools/strucpp/strucpp/strucpp scenes/${slug}/plc/program.st --debug -o /tmp/check_${slug}.cpp" and fix any errors.`,
-      `5. Only modify "scenes/${slug}/plc/program.st". Reply with one concise summary sentence.`,
+      `2. Author "scenes/${slug}/plc/program.st" matching the frozen plc.functionBlockName, plc.programName, all located AT signals (in their own dedicated VAR block), NC boundary inversion for any contact:"NC" signal, and TASK INTERVAL matching parameters.scanIntervalMs.`,
+      `3. Self-heal (max 2 attempts): Run \`${linkCmd} && .tools/strucpp/strucpp/strucpp scenes/${slug}/plc/program.st --debug -o /tmp/check_${slug}.cpp\` and fix any errors.`,
+      `4. Only modify "scenes/${slug}/plc/program.st". Reply with one concise summary sentence.`,
     ].join('\n')
   }
 
   if (workerSpec.agent === 'oip-builder') {
     return [
-      `Orchestrator dispatch brief:\n${orchestratorBrief}`,
+      contextBlock,
       '',
       `1. Call the skill tool to load "oip-scene" and read ".opencode/skills/oip-scene/oip-cli-reference.md".`,
-      `2. Read "scenes/${slug}/io-contract.json" and "scenes/${slug}/process-spec.md". Use OIP CLI directly without grepping "Open-Industry-Project/" source files.`,
-      `3. ${linkHint} Build "scenes/${slug}/" (project.json, scene.json version 4, and baked parts/) via "npm --prefix Open-Industry-Project run add-part / snap-part / edit-part" against "$PWD/scenes/${slug}". Wire every signal in io-contract.json to its exact sceneRole.partId and sceneRole.param, include top-level "plcs": [{ "name": "PLC1", "runsOn": "plc", "protocol": "serve", "connect": true }] in scene.json, and ensure project.json lists "program": ["plc/program.st"].`,
-      `4. Self-heal (max 2 attempts): Run validate-project --strict, check-wiring --strict, and check-layout against "$PWD/scenes/${slug}" and fix any errors.`,
+      `2. Do NOT grep or search inside "Open-Industry-Project/" source files. First run \`${linkCmd}\` in your worktree.`,
+      `3. Build "scenes/${slug}/" (project.json, scene.json version 4, and baked parts/) in ONE "npm --prefix Open-Industry-Project run add-part -- \"$PWD/scenes/${slug}\" ... --scaffold" command listing every part from the I/O Contract above (plus any despawners). Then edit scenes/${slug}/scene.json to add top-level "plcs": [{ "name": "PLC1", "runsOn": "plc", "protocol": "serve", "connect": true }], verify every sceneRole.partId/param matches the I/O Contract 1:1, and ensure project.json lists "program": ["plc/program.st"] and "tests": [].`,
+      `4. Self-heal (max 2 attempts): Run \`npm --prefix Open-Industry-Project run validate-project -- "$PWD/scenes/${slug}" --strict && npm --prefix Open-Industry-Project run check-layout -- "$PWD/scenes/${slug}"\` and fix any errors (check-st and check-wiring --strict run post-merge once plc/program.st is merged).`,
       `5. Only modify files under "scenes/${slug}/" (project.json, scene.json, parts/). Leave plc/ and tests/ untouched. Reply with one concise summary sentence.`,
     ].join('\n')
   }
 
   return [
-    `Orchestrator dispatch brief:\n${orchestratorBrief}`,
+    contextBlock,
     '',
     `1. Call the skill tool to load "plc-oip-verify" and read ".opencode/skills/plc-oip-verify/verification-seams.md".`,
-    `2. Read "scenes/${slug}/io-contract.json", "scenes/${slug}/process-spec.md", and "GLOSSARY.md".`,
-    `3. Author "scenes/${slug}/tests/program.test.st" testing FUNCTION_BLOCK <plc.functionBlockName> across every core process behavior in process-spec.md using exact signal names from io-contract.json, single-quoted TEST '...' titles, top-level ADVANCE_TIME(<ns>); only, and SETUP instantiating the function block.`,
-    `4. Only modify "scenes/${slug}/tests/program.test.st". Reply with one concise summary sentence.`,
+    `2. Author "scenes/${slug}/tests/program.test.st" testing FUNCTION_BLOCK <plc.functionBlockName> across every core process behavior in the Process Specification above using exact signal names from the I/O Contract, single-quoted TEST '...' titles, top-level ADVANCE_TIME(<ns>); only, and SETUP instantiating the function block.`,
+    `3. Only modify "scenes/${slug}/tests/program.test.st". Reply with one concise summary sentence.`,
   ].join('\n')
 }
 
@@ -484,6 +496,8 @@ export async function generateCell({
     machine = stepMachine(machine, { type: 'ORCHESTRATOR_DONE' })
 
     // Stage 2: 3 parallel workers in isolated git worktrees
+    const frozenContractJson = readFileSync(join(baseCellDir, 'io-contract.json'), 'utf8')
+    const frozenSpecText = readFileSync(join(baseCellDir, 'process-spec.md'), 'utf8')
     onEvent({ stage: 'stage2', slug, model: resolvedWorkerModel })
     log(`[generate:${runId}] Stage 2: Dispatching 3 parallel workers (${resolvedWorkerModel}) in isolated git worktrees...`)
     const workerSettled = await Promise.allSettled(
@@ -499,6 +513,8 @@ export async function generateCell({
             workerSpec,
             orchestratorBrief: orchestrator.finalText,
             repoRoot,
+            contractJson: frozenContractJson,
+            specText: frozenSpecText,
           }),
         })
         return { ...res, expectedSkill: workerSpec.expectedSkill }
@@ -571,6 +587,12 @@ export async function generateCell({
     verification = verifyCellFn({ slug, repoRoot: merge.integrationWorktreePath, log: () => {}, error: () => {} })
 
     while (!verification.ok) {
+      const failureSummary = [
+        `Gate 1 — I/O Contract (${verification.gates.contract?.passed ? 'PASS' : 'FAIL'}): ${JSON.stringify(verification.gates.contract?.problems ?? [])}`,
+        `Gate 2 — STruC++ PLC Unit Tests (${verification.gates.plcTest?.passed ? 'PASS' : 'FAIL'}):\n${verification.gates.plcTest?.summary ?? ''}`,
+        `Gate 3 — OIP Validators (${verification.gates.oipValidate?.passed ? 'PASS' : 'FAIL'}):\n${verification.gates.oipValidate?.summary ?? ''}`,
+      ].join('\n\n')
+
       machine = stepMachine(machine, {
         type: 'GATE_FAIL_REPAIR',
         gates: {
@@ -582,18 +604,12 @@ export async function generateCell({
       })
       if (machine.phase === 'failed') {
         throw new Error(
-          `Verification failed after repair budget exhausted: contract=${verification.gates.contract?.passed}, plcTest=${verification.gates.plcTest?.passed}, oipValidate=${verification.gates.oipValidate?.passed}`,
+          `Verification failed after repair budget exhausted: contract=${verification.gates.contract?.passed}, plcTest=${verification.gates.plcTest?.passed}, oipValidate=${verification.gates.oipValidate?.passed}\n\n${failureSummary}`,
         )
       }
 
-      const failureSummary = [
-        `Gate 1 — I/O Contract (${verification.gates.contract?.passed ? 'PASS' : 'FAIL'}): ${JSON.stringify(verification.gates.contract?.problems ?? [])}`,
-        `Gate 2 — STruC++ PLC Unit Tests (${verification.gates.plcTest?.passed ? 'PASS' : 'FAIL'}):\n${verification.gates.plcTest?.summary ?? ''}`,
-        `Gate 3 — OIP Validators (${verification.gates.oipValidate?.passed ? 'PASS' : 'FAIL'}):\n${verification.gates.oipValidate?.summary ?? ''}`,
-      ].join('\n\n')
-
       onEvent({ stage: 'stage4_repair', slug, attempt: machine.repairAttempts })
-      log(`[generate:${runId}] Stage 4 Repair Pass ${machine.repairAttempts}/${machine.maxPostMergeRepairs}...`)
+      log(`[generate:${runId}] Stage 4 Repair Pass ${machine.repairAttempts}/${machine.maxPostMergeRepairs}:\n${failureSummary}`)
       repairPass = await runAgent({
         agent: 'orchestrator',
         model: resolvedOrchestratorModel,
