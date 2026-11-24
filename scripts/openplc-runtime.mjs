@@ -176,7 +176,6 @@ export async function deployBundle({
   }
   return {
     stop: () => activeClient.stop(),
-    client: activeClient,
     version,
     md5,
     userCreated: created,

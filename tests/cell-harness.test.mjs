@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import {
   assertBoxSpacing,
   createTagOverlay,
@@ -7,6 +10,9 @@ import {
   measureMinBoxGap,
   restingSignalValue,
 } from './lib/cell-invariants.mjs'
+import { createModbusTestSession, openModbusPlcSession } from './lib/cell-harness.mjs'
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 const CELL_CONTRACT = {
   signals: [
@@ -283,5 +289,163 @@ describe('deriveBoxLengthFromScene', () => {
       () => deriveBoxLengthFromScene({ parts: [{ id: 'spawner_1', params: { length: 0 } }] }, CELL_CONTRACT),
       /Could not derive positive box length/,
     )
+  })
+})
+
+function makeFakeModbus() {
+  let simTags = {}
+  const simTagWrites = []
+  let plcOut = {}
+  let closeCount = 0
+
+  return {
+    simTagWrites,
+    setPlcOut: (next) => {
+      plcOut = next
+    },
+    getLatestSimTags: () => ({ ...simTags }),
+    getCloseCount: () => closeCount,
+    modbus: {
+      io: {
+        writeSimTags: (tags) => {
+          simTags = { ...tags }
+          simTagWrites.push({ ...tags })
+        },
+        plcTags: () => plcOut,
+      },
+      modbusTraffic: () => ({ discreteInputReads: 3, coilWrites: 2, holdingRegisterWrites: 1 }),
+      close: async () => {
+        closeCount += 1
+      },
+    },
+  }
+}
+
+describe('openModbusPlcSession & createModbusTestSession offline lifecycle', () => {
+  it('seeds NC EStop=true before deploy, tears down via stop(), and makes dispose() idempotent', async () => {
+    const fake = makeFakeModbus()
+    const events = []
+    let stopCount = 0
+    let extraCleanupCount = 0
+
+    const session = await openModbusPlcSession({
+      contract: CELL_CONTRACT,
+      startServer: async () => {
+        events.push('startServer')
+        return fake.modbus
+      },
+      prepareBeforeDeploy: async ({ registerCleanup }) => {
+        events.push('prepareBeforeDeploy')
+        registerCleanup(async () => {
+          extraCleanupCount += 1
+          events.push('extraCleanup')
+        })
+      },
+      deploy: async () => {
+        events.push(`deploy:EStop=${fake.getLatestSimTags()['%IX0.2']}`)
+        return {
+          compilationStatus: 'SUCCESS',
+          stop: async () => {
+            stopCount += 1
+            events.push('stop')
+          },
+        }
+      },
+    })
+
+    assert.deepEqual(events, ['startServer', 'prepareBeforeDeploy', 'deploy:EStop=true'])
+    assert.equal(fake.simTagWrites[0]['%IX0.2'], true)
+    assert.equal(session.snapshot().inputs.EStop, true)
+
+    await session.dispose()
+    await session.dispose()
+
+    assert.equal(stopCount, 1)
+    assert.equal(fake.getCloseCount(), 1)
+    assert.equal(extraCleanupCount, 1)
+  })
+
+  it('rolls back Modbus server and extraCleanup when deploy rejects or reports FAILED compilation', async () => {
+    const fakeReject = makeFakeModbus()
+    let rejectCleanupCount = 0
+
+    await assert.rejects(
+      openModbusPlcSession({
+        contract: CELL_CONTRACT,
+        startServer: async () => fakeReject.modbus,
+        prepareBeforeDeploy: async ({ registerCleanup }) => {
+          registerCleanup(() => {
+            rejectCleanupCount += 1
+          })
+        },
+        deploy: async () => {
+          throw new Error('OpenPLC compilation failed (exit 2)')
+        },
+      }),
+      /OpenPLC compilation failed/,
+    )
+    assert.equal(fakeReject.getCloseCount(), 1)
+    assert.equal(rejectCleanupCount, 1)
+
+    const fakeFailedStatus = makeFakeModbus()
+    let failedStopCount = 0
+    let failedCleanupCount = 0
+
+    await assert.rejects(
+      openModbusPlcSession({
+        contract: CELL_CONTRACT,
+        startServer: async () => fakeFailedStatus.modbus,
+        prepareBeforeDeploy: async ({ registerCleanup }) => {
+          registerCleanup(() => {
+            failedCleanupCount += 1
+          })
+        },
+        deploy: async () => ({
+          compilationStatus: 'FAILED',
+          stop: async () => {
+            failedStopCount += 1
+          },
+        }),
+      }),
+      /OpenPLC deployment compilation status was "FAILED"/,
+    )
+    assert.equal(failedStopCount, 1)
+    assert.equal(fakeFailedStatus.getCloseCount(), 1)
+    assert.equal(failedCleanupCount, 1)
+  })
+
+  it('standalone createModbusTestSession seeds NC EStop as true via createTagOverlay and drops raw client/partsById', async () => {
+    const fake = makeFakeModbus()
+    let stopCount = 0
+
+    const session = await createModbusTestSession({
+      startServer: async () => fake.modbus,
+      deploy: async () => ({
+        compilationStatus: 'SUCCESS',
+        stop: async () => {
+          stopCount += 1
+        },
+      }),
+    })
+
+    try {
+      assert.equal(session.snapshot().inputs.EStop, true)
+      assert.equal(fake.getLatestSimTags()['%IX0.2'], true)
+
+      session.setInput('EStop', false)
+      assert.equal(fake.getLatestSimTags()['%IX0.2'], false)
+      session.clearInputOverride('EStop')
+      assert.equal(fake.getLatestSimTags()['%IX0.2'], true)
+    } finally {
+      await session.dispose()
+      await session.dispose()
+    }
+    assert.equal(stopCount, 1)
+    assert.equal(fake.getCloseCount(), 1)
+
+    const harnessSrc = readFileSync(join(REPO_ROOT, 'tests', 'lib', 'cell-harness.mjs'), 'utf8')
+    assert.equal(harnessSrc.includes('partsById'), false)
+    assert.equal(harnessSrc.includes('.client'), false)
+    assert.equal(harnessSrc.includes('defaultSignalValue'), false)
   })
 })

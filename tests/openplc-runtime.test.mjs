@@ -294,7 +294,7 @@ describe('openplc-runtime', () => {
       assert.equal(res.compilationStatus, 'SUCCESS')
       assert.equal(res.plcStatus, 'RUNNING')
       assert.equal(typeof res.stop, 'function')
-      assert.ok(res.client instanceof OpenPlcClient)
+      assert.equal('client' in res, false)
 
       const uploaded = stub.getUploadedFile()
       assert.ok(uploaded)

@@ -36,10 +36,6 @@ const FC_WRITE_SINGLE_REGISTER = 6
 const FC_WRITE_MULTIPLE_COILS = 15
 const FC_WRITE_MULTIPLE_REGISTERS = 16
 
-function defaultSignalValue(signal) {
-  return signal.type === 'BOOL' ? false : 0
-}
-
 /**
  * Start a contract-derived OIP ModbusServerIo + TCP listener without spinning
  * up SimWorld. Reusable by both the full Cell Harness and standalone Modbus
@@ -87,6 +83,105 @@ export async function startContractModbusServer({
 }
 
 /**
+ * Open a shared contract-derived Modbus TCP + OpenPLC session owning tag overlay
+ * defaults, OpenPLC bundle deployment via deploy().stop(), compile-failure rollback,
+ * and idempotent resource teardown.
+ */
+export async function openModbusPlcSession({
+  contract,
+  stPath,
+  modbusMasterPath,
+  runtimeUrl = DEFAULT_OPENPLC_URL,
+  modbusPort,
+  startServer = () =>
+    startContractModbusServer({
+      contract,
+      host: '0.0.0.0',
+      ...(modbusPort !== undefined ? { port: modbusPort } : {}),
+    }),
+  deploy = () =>
+    deployProgram({
+      stPath,
+      modbusMasterPath,
+      runtimeUrl,
+      startAfterDeploy: true,
+    }),
+  prepareBeforeDeploy,
+}) {
+  const overlay = createTagOverlay(contract)
+  const modbus = await startServer()
+  let stopPlc = null
+  let serverClosed = false
+  const extraCleanups = []
+
+  const registerCleanup = (fn) => {
+    if (typeof fn === 'function') extraCleanups.push(fn)
+  }
+
+  const dispose = async () => {
+    if (stopPlc) {
+      const stop = stopPlc
+      stopPlc = null
+      await Promise.resolve(stop()).catch(() => {})
+    }
+    if (!serverClosed) {
+      serverClosed = true
+      await Promise.resolve(modbus.close()).catch(() => {})
+    }
+    while (extraCleanups.length > 0) {
+      const cleanup = extraCleanups.pop()
+      await Promise.resolve(cleanup()).catch(() => {})
+    }
+  }
+
+  try {
+    if (prepareBeforeDeploy) {
+      await prepareBeforeDeploy({ modbus, overlay, registerCleanup })
+    }
+
+    const writeSimTags = () => {
+      modbus.io.writeSimTags(overlay.compose())
+    }
+    writeSimTags()
+
+    const deployed = await deploy()
+    stopPlc = typeof deployed?.stop === 'function' ? deployed.stop : null
+    assert.equal(
+      deployed?.compilationStatus,
+      'SUCCESS',
+      `OpenPLC deployment compilation status was "${deployed?.compilationStatus}", expected "SUCCESS"`,
+    )
+
+    const snapshot = (plcOut = modbus.io.plcTags()) =>
+      overlay.snapshot(plcOut, modbus.modbusTraffic())
+
+    const setInput = (name, value) => {
+      overlay.setOverride(name, value)
+      writeSimTags()
+    }
+
+    const clearInputOverride = (name) => {
+      overlay.clearOverride(name)
+      writeSimTags()
+    }
+
+    return {
+      contract,
+      modbus,
+      overlay,
+      writeSimTags,
+      snapshot,
+      setInput,
+      clearInputOverride,
+      dispose,
+    }
+  } catch (err) {
+    await dispose()
+    throw err
+  }
+}
+
+/**
  * Start a standalone contract-derived Modbus TCP + OpenPLC session without
  * spinning up SimWorld. Owns Modbus server lifecycle, symbolic I/O reads/writes,
  * polling waitUntil, and OpenPLC deploy/stop teardown.
@@ -97,88 +192,40 @@ export async function createModbusTestSession({
   modbusMasterPath,
   runtimeUrl = DEFAULT_OPENPLC_URL,
   modbusPort,
+  startServer,
+  deploy,
 }) {
   const contract = JSON.parse(readFileSync(contractPath, 'utf8'))
-  const inputSignals = contract.signals.filter((s) => s.direction === 'oip_to_plc')
-  const outputSignals = contract.signals.filter((s) => s.direction === 'plc_to_oip')
-  const inputByName = new Map(inputSignals.map((s) => [s.name, s]))
-
-  const modbus = await startContractModbusServer({
+  const session = await openModbusPlcSession({
     contract,
-    host: '0.0.0.0',
-    ...(modbusPort !== undefined ? { port: modbusPort } : {}),
+    stPath,
+    modbusMasterPath,
+    runtimeUrl,
+    modbusPort,
+    ...(startServer ? { startServer } : {}),
+    ...(deploy ? { deploy } : {}),
   })
-  let client = null
 
-  const dispose = async () => {
-    if (client) {
-      const c = client
-      client = null
-      await c.stop().catch(() => {})
+  const waitUntil = async (label, predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const snap = session.snapshot()
+      if (predicate(snap)) return snap
+      await sleep(intervalMs)
     }
-    await modbus.close()
+    const last = session.snapshot()
+    throw new Error(
+      `Timed out after ${timeoutMs}ms waiting for ${label} (outputs=${JSON.stringify(last.outputs)}, inputs=${JSON.stringify(last.inputs)})`,
+    )
   }
 
-  try {
-    const simTags = {}
-    for (const sig of inputSignals) {
-      simTags[sig.iecAddress] = defaultSignalValue(sig)
-    }
-    modbus.io.writeSimTags(simTags)
-
-    const deployed = await deployProgram({
-      stPath,
-      modbusMasterPath,
-      runtimeUrl,
-      startAfterDeploy: true,
-    })
-    client = deployed.client
-    assert.equal(deployed.compilationStatus, 'SUCCESS')
-
-    const snapshot = () => {
-      const plcOut = modbus.io.plcTags()
-      const inputs = {}
-      for (const sig of inputSignals) {
-        inputs[sig.name] = simTags[sig.iecAddress] ?? defaultSignalValue(sig)
-      }
-      const outputs = {}
-      for (const sig of outputSignals) {
-        outputs[sig.name] = plcOut[sig.iecAddress] ?? defaultSignalValue(sig)
-      }
-      return { inputs, outputs, modbus: modbus.modbusTraffic() }
-    }
-
-    const setInput = (name, value) => {
-      if (!inputByName.has(name)) {
-        throw new Error(`Unknown symbolic Cell input "${name}"`)
-      }
-      simTags[modbus.addrByName[name]] = value
-      modbus.io.writeSimTags(simTags)
-    }
-
-    const waitUntil = async (label, predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) => {
-      const deadline = Date.now() + timeoutMs
-      while (Date.now() < deadline) {
-        const snap = snapshot()
-        if (predicate(snap)) return snap
-        await sleep(intervalMs)
-      }
-      const last = snapshot()
-      throw new Error(
-        `Timed out after ${timeoutMs}ms waiting for ${label} (outputs=${JSON.stringify(last.outputs)}, inputs=${JSON.stringify(last.inputs)})`,
-      )
-    }
-
-    return {
-      contract,
-      setInput,
-      snapshot,
-      waitUntil,
-      dispose,
-    }
-  } catch (err) {
-    await dispose()
-    throw err
+  return {
+    contract: session.contract,
+    setInput: session.setInput,
+    clearInputOverride: session.clearInputOverride,
+    snapshot: () => session.snapshot(),
+    waitUntil,
+    dispose: session.dispose,
   }
 }
 
@@ -203,196 +250,109 @@ export async function createCellHarness({
   const scene = JSON.parse(readFileSync(scenePath, 'utf8'))
   const boxLengthM = deriveBoxLengthFromScene(scene, contract)
   const minSeparationM = boxLengthM + spacingMarginM
+  const staticPartIds = new Set(scene.parts.map((p) => p.id))
 
-  const inputSignals = contract.signals.filter((s) => s.direction === 'oip_to_plc')
-  const outputSignals = contract.signals.filter((s) => s.direction === 'plc_to_oip')
-  const inputByName = new Map(inputSignals.map((s) => [s.name, s]))
-  const partsById = new Map(scene.parts.map((p) => [p.id, p]))
-
-  const modbus = await startContractModbusServer({
-    contract,
-    host: '0.0.0.0',
-    ...(modbusPort !== undefined ? { port: modbusPort } : {}),
-  })
   let world = null
-  let client = null
+  const session = await openModbusPlcSession({
+    contract,
+    stPath,
+    modbusMasterPath,
+    runtimeUrl,
+    modbusPort,
+    prepareBeforeDeploy: ({ modbus, overlay, registerCleanup }) => {
+      world = new modbus.oip.SimWorld(modbus.oip.Jolt, scene, { hz })
+      registerCleanup(() => {
+        if (world) {
+          const w = world
+          world = null
+          w.dispose()
+        }
+      })
+      world.setBehaviorDrivenTags(modbus.oip.externalDrivenTags(modbus.externalIo))
 
-  const dispose = async () => {
-    if (client) {
-      const c = client
-      client = null
-      await c.stop().catch(() => {})
+      // Step SimWorld once before starting OpenPLC so every part (including NC estop_pb)
+      // publishes its real resting contact state into the Modbus image before scan 0.
+      world.step()
+      overlay.setBase(flattenTags(world.frame().tags))
+    },
+  })
+
+  let simTime = 0
+  let minObservedBoxGapM = Infinity
+
+  const buildSnapshot = (plcOut) => ({
+    simTime,
+    ...session.snapshot(plcOut),
+    minObservedBoxGapM,
+  })
+
+  const stepWallClock = async (durationSec, untilPred) => {
+    const startWall = performance.now()
+    const startSteps = Math.round(simTime * hz)
+    const targetSteps = startSteps + Math.round(durationSec * hz)
+    let steps = startSteps
+
+    while (steps < targetSteps) {
+      const elapsedSec = (performance.now() - startWall) / 1000
+      const due = Math.min(targetSteps, startSteps + Math.floor(elapsedSec * hz))
+      while (steps < due) {
+        session.writeSimTags()
+        const plcOut = session.modbus.io.plcTags()
+        world.setBehaviorInputTags(plcOut)
+        world.step()
+        const frame = world.frame()
+        const spacing = assertBoxSpacing(frame, { staticPartIds, minSeparationM, simTime })
+        if (spacing.minGapM < minObservedBoxGapM) minObservedBoxGapM = spacing.minGapM
+        session.overlay.setBase(flattenTags(frame.tags))
+        steps += 1
+        simTime = steps / hz
+        if (untilPred) {
+          const snap = buildSnapshot(plcOut)
+          if (untilPred(snap)) return { matched: true, snapshot: snap }
+        }
+      }
+      await sleep(5)
     }
-    await modbus.close()
-    if (world) {
-      const w = world
-      world = null
-      w.dispose()
+    return { matched: false, snapshot: buildSnapshot() }
+  }
+
+  const stepUntil = async (label, predicate, maxSec) => {
+    const { matched, snapshot } = await stepWallClock(maxSec, predicate)
+    assert.equal(
+      matched,
+      true,
+      `Timed out after ${maxSec}s waiting for ${label} (t=${snapshot.simTime.toFixed(2)}s, outputs=${JSON.stringify(snapshot.outputs)}, inputs=${JSON.stringify(snapshot.inputs)})`,
+    )
+    return snapshot
+  }
+
+  const advance = async (durationSec) => {
+    const { snapshot } = await stepWallClock(durationSec)
+    return snapshot
+  }
+
+  const pulseInput = async (name, { until, label = `${name} pulse`, maxSec = 2.0, durationSec = 0.25 } = {}) => {
+    session.setInput(name, true)
+    try {
+      if (until) {
+        return await stepUntil(label, until, maxSec)
+      }
+      return await advance(durationSec)
+    } finally {
+      session.clearInputOverride(name)
     }
   }
 
-  try {
-    world = new modbus.oip.SimWorld(modbus.oip.Jolt, scene, { hz })
-    world.setBehaviorDrivenTags(modbus.oip.externalDrivenTags(modbus.externalIo))
-
-    // Let SimWorld drive resting states for all parts (including NC E-Stop = TRUE);
-    // overrides are applied only when a test explicitly sets or pulses an input.
-    const inputOverrides = new Map()
-
-    // Step SimWorld once before starting OpenPLC so every part (including NC estop_pb)
-    // publishes its real resting contact state into the Modbus image before scan 0.
-    world.step()
-    let worldTags = flattenTags(world.frame().tags)
-    const composedSimTags = () => {
-      const merged = { ...worldTags }
-      for (const [name, val] of inputOverrides) {
-        merged[modbus.addrByName[name]] = val
-      }
-      return merged
-    }
-
-    modbus.io.writeSimTags(composedSimTags())
-
-    const deployed = await deployProgram({
-      stPath,
-      modbusMasterPath,
-      runtimeUrl,
-      startAfterDeploy: true,
-    })
-    client = deployed.client
-    assert.equal(deployed.compilationStatus, 'SUCCESS')
-
-    const staticPartIds = new Set(scene.parts.map((p) => p.id))
-    let simTime = 0
-    let minObservedBoxGapM = Infinity
-
-    const checkBoxSpacing = (frame) => {
-      const boxXs = []
-      for (let i = 0; i < frame.partIds.length; i += 1) {
-        const id = frame.partIds[i]
-        // Spawned boxes are dynamic cargo bodies (null or not in static scene parts)
-        if (!id || !staticPartIds.has(id)) {
-          const x = frame.positions[i * 3]
-          const y = frame.positions[i * 3 + 1]
-          if (Number.isFinite(x) && y > 0.5) boxXs.push(x)
-        }
-      }
-      boxXs.sort((a, b) => a - b)
-      for (let i = 1; i < boxXs.length; i += 1) {
-        const gap = boxXs[i] - boxXs[i - 1]
-        if (gap < minObservedBoxGapM) minObservedBoxGapM = gap
-        assert.ok(
-          gap >= minSeparationM,
-          `Touching boxes detected at t=${simTime.toFixed(2)}s: center spacing ${gap.toFixed(3)}m < ${minSeparationM.toFixed(3)}m`,
-        )
-      }
-    }
-
-    const buildSnapshot = (plcOut = modbus.io.plcTags()) => {
-      const simTags = composedSimTags()
-      const inputs = {}
-      for (const sig of inputSignals) {
-        inputs[sig.name] = simTags[sig.iecAddress] ?? defaultSignalValue(sig)
-      }
-      const outputs = {}
-      for (const sig of outputSignals) {
-        outputs[sig.name] = plcOut[sig.iecAddress] ?? defaultSignalValue(sig)
-      }
-      return {
-        simTime,
-        inputs,
-        outputs,
-        minObservedBoxGapM,
-        modbus: modbus.modbusTraffic(),
-      }
-    }
-
-    const stepWallClock = async (durationSec, untilPred) => {
-      const startWall = performance.now()
-      const startSteps = Math.round(simTime * hz)
-      const targetSteps = startSteps + Math.round(durationSec * hz)
-      let steps = startSteps
-
-      while (steps < targetSteps) {
-        const elapsedSec = (performance.now() - startWall) / 1000
-        const due = Math.min(targetSteps, startSteps + Math.floor(elapsedSec * hz))
-        while (steps < due) {
-          modbus.io.writeSimTags(composedSimTags())
-          const plcOut = modbus.io.plcTags()
-          world.setBehaviorInputTags(plcOut)
-          world.step()
-          const frame = world.frame()
-          checkBoxSpacing(frame)
-          worldTags = flattenTags(frame.tags)
-          steps += 1
-          simTime = steps / hz
-          if (untilPred) {
-            const snap = buildSnapshot(plcOut)
-            if (untilPred(snap)) return { matched: true, snapshot: snap }
-          }
-        }
-        await sleep(5)
-      }
-      return { matched: false, snapshot: buildSnapshot() }
-    }
-
-    const assertKnownInput = (name) => {
-      if (!inputByName.has(name)) {
-        throw new Error(`Unknown symbolic Cell input "${name}"`)
-      }
-    }
-
-    const setInput = (name, value) => {
-      assertKnownInput(name)
-      inputOverrides.set(name, value)
-    }
-
-    const clearInputOverride = (name) => {
-      assertKnownInput(name)
-      inputOverrides.delete(name)
-    }
-
-    const stepUntil = async (label, predicate, maxSec) => {
-      const { matched, snapshot } = await stepWallClock(maxSec, predicate)
-      assert.equal(
-        matched,
-        true,
-        `Timed out after ${maxSec}s waiting for ${label} (t=${snapshot.simTime.toFixed(2)}s, outputs=${JSON.stringify(snapshot.outputs)}, inputs=${JSON.stringify(snapshot.inputs)})`,
-      )
-      return snapshot
-    }
-
-    const advance = async (durationSec) => {
-      const { snapshot } = await stepWallClock(durationSec)
-      return snapshot
-    }
-
-    const pulseInput = async (name, { until, label = `${name} pulse`, maxSec = 2.0, durationSec = 0.25 } = {}) => {
-      setInput(name, true)
-      try {
-        if (until) {
-          return await stepUntil(label, until, maxSec)
-        }
-        return await advance(durationSec)
-      } finally {
-        clearInputOverride(name)
-      }
-    }
-
-    return {
-      contract,
-      boxLengthM,
-      minSeparationM,
-      setInput,
-      clearInputOverride,
-      pulseInput,
-      stepUntil,
-      advance,
-      snapshot: () => buildSnapshot(),
-      dispose,
-    }
-  } catch (err) {
-    await dispose()
-    throw err
+  return {
+    contract: session.contract,
+    boxLengthM,
+    minSeparationM,
+    setInput: session.setInput,
+    clearInputOverride: session.clearInputOverride,
+    pulseInput,
+    stepUntil,
+    advance,
+    snapshot: () => buildSnapshot(),
+    dispose: session.dispose,
   }
 }
