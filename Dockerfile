@@ -20,7 +20,16 @@ RUN git init \
   && npm run build \
   && rm -rf .git
 
-# Stage 2: Demo Portal runtime (Node 24 + STruC++ v0.8.0 + OpenCode v2.4.0 + git worktrees + OIP)
+# Stage 2: Build Demo Portal web frontend (Vite + React + Tailwind CSS + Lucide)
+FROM node:24-bookworm-slim AS portal-web-builder
+
+WORKDIR /portal-web
+COPY portal/web/package.json portal/web/package-lock.json ./
+RUN npm ci
+COPY portal/web/ ./
+RUN npm run build
+
+# Stage 3: Demo Portal runtime (Node 24 + STruC++ v0.8.0 + OpenCode v2.4.0 + git worktrees + OIP)
 FROM node:24-bookworm-slim AS runtime
 
 ARG TARGETARCH
@@ -79,9 +88,10 @@ RUN set -eux; \
   chmod +x /usr/local/bin/opencode; \
   opencode --version
 
-# Copy repository source (clean via .dockerignore) and built OIP bundle
+# Copy repository source (clean via .dockerignore), built OIP bundle, and built Demo Portal SPA
 COPY . /app
 COPY --from=oip-builder /oip /app/Open-Industry-Project
+COPY --from=portal-web-builder /portal-web/dist /app/portal/web/dist
 
 # Initialize git repository for Task 2 parallel git worktrees + create persistent Cells volume mountpoint
 RUN mkdir -p /data/cells \

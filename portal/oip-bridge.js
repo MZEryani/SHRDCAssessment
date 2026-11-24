@@ -375,45 +375,73 @@
     const shadow = host.attachShadow({ mode: 'open' })
     shadow.innerHTML = `
       <style>
-        :host { all: initial; font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
+        :host {
+          all: initial;
+          font-family: "Fira Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
         .pill {
-          display: flex;
+          display: inline-flex;
           flex-wrap: wrap;
           align-items: center;
           gap: 10px;
           padding: 7px 12px;
-          border-radius: 999px;
-          background: rgba(20, 23, 29, 0.92);
-          color: #f1f5f9;
-          border: 1px solid rgba(148, 163, 184, 0.35);
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+          border-radius: 10px;
+          background: rgba(15, 23, 42, 0.92);
+          color: #f8fafc;
+          border: 1px solid rgba(51, 65, 85, 0.85);
+          box-shadow: 0 10px 28px rgba(2, 6, 23, 0.45);
           font-size: 12px;
           line-height: 1.3;
-          backdrop-filter: blur(8px);
+          backdrop-filter: blur(10px);
         }
-        .dot { width: 8px; height: 8px; border-radius: 999px; background: #94a3b8; display: inline-block; }
-        .dot.ok { background: #10b981; }
+        .dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 999px;
+          background: #94a3b8;
+          display: inline-block;
+          flex: none;
+        }
+        .dot.ok { background: #22c55e; box-shadow: 0 0 8px rgba(34, 197, 94, 0.6); }
         .dot.warn { background: #f59e0b; }
-        .dot.err { background: #ef4444; }
-        .muted { color: #cbd5e1; }
-        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .dot.err { background: #f87171; }
+        .sep { color: #475569; }
+        .muted { color: #94a3b8; }
+        .mono {
+          font-family: "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 11px;
+        }
         a.back {
-          color: #93c5fd;
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          color: #f8fafc;
+          background: rgba(37, 99, 235, 0.22);
           text-decoration: none;
           font-weight: 600;
-          padding: 2px 8px;
-          border-radius: 999px;
-          border: 1px solid rgba(147, 197, 253, 0.4);
+          padding: 3px 9px;
+          border-radius: 7px;
+          border: 1px solid rgba(59, 130, 246, 0.5);
+          transition: background 150ms ease, border-color 150ms ease;
         }
-        a.back:hover { background: rgba(147, 197, 253, 0.16); }
-        a.back:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+        a.back:hover {
+          background: rgba(37, 99, 235, 0.38);
+          border-color: rgba(96, 165, 250, 0.8);
+        }
+        a.back:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+        svg { width: 12px; height: 12px; flex: none; }
       </style>
       <div class="pill" role="status" aria-live="polite">
         <span class="dot" id="dot" aria-hidden="true"></span>
-        <strong id="status-text">OpenPLC · Press Play in OIP</strong>
+        <strong id="status-text">OpenPLC · Press Play</strong>
+        <span class="sep" aria-hidden="true">·</span>
         <span class="muted mono" id="polls-text">0 polls</span>
-        <span class="muted" id="lock-text">Read-Only Cell: ${cellSlug}</span>
-        <a class="back" href="/">← Demo Console</a>
+        <span class="sep" aria-hidden="true">·</span>
+        <span class="muted mono" id="lock-text">${cellSlug}</span>
+        <a class="back" href="/">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+          <span>Console</span>
+        </a>
       </div>
     `
     document.body.appendChild(host)

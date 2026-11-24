@@ -3,6 +3,8 @@
 .tools
 Open-Industry-Project
 node_modules
+portal/web/node_modules
+portal/web/dist
 .env
 .env.*
 !.env.example

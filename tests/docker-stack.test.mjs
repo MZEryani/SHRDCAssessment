@@ -14,6 +14,8 @@ describe('Docker 3-Container EC2 Stack & Local Override Configuration', () => {
   it('pins OIP commit SHA, STruC++ v0.8.0 + SHA-256, OpenCode v2.4.0 + SHA-256, and git worktree init in Dockerfile', () => {
     const dockerfile = readRepoFile('Dockerfile')
     assert.match(dockerfile, /AS oip-builder/)
+    assert.match(dockerfile, /AS portal-web-builder/)
+    assert.match(dockerfile, /COPY --from=portal-web-builder \/portal-web\/dist \/app\/portal\/web\/dist/)
     assert.match(dockerfile, /OIP_COMMIT=0afba0117eaa19589b4ae9c66412ae29c0e664a8/)
     assert.match(dockerfile, /STRUCPP_VERSION=0\.8\.0/)
     assert.match(dockerfile, /cf2b919620ca389186d9cc5be293f7d655511c183d1b49a77220ec60e0584e71/)
@@ -40,6 +42,8 @@ describe('Docker 3-Container EC2 Stack & Local Override Configuration', () => {
       '.scratch',
       '.tools',
       'Open-Industry-Project',
+      'portal/web/node_modules',
+      'portal/web/dist',
       'scenes/*',
       '!scenes/conveyor-cell',
     ]) {

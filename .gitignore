@@ -14,6 +14,7 @@ Open-Industry-Project/
 
 # Dependencies & Logs
 node_modules/
+portal/web/dist/
 __pycache__/
 *.log
 

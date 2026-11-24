@@ -3,8 +3,7 @@ import { createServer } from 'node:http'
 import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createSessionAuth } from './auth.mjs'
-import { createCellStore } from './cell-store.mjs'
-import { renderConsolePage, renderLoginPage } from './console-ui.mjs'
+import { createCellStore, PROTECTED_CELL_SLUG } from './cell-store.mjs'
 import {
   createGenerationManager,
   DEFAULT_DAILY_GENERATION_CAP,
@@ -128,6 +127,33 @@ function safeResolveUnder(rootDir, pathname) {
   return target
 }
 
+function escapeAttr(str) {
+  return String(str ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+}
+
+function renderPortalShell(portalWebDistDir, { authenticated = false, errorMessage = '' } = {}) {
+  const indexPath = join(portalWebDistDir, 'index.html')
+  if (!existsSync(indexPath)) {
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="portal-auth" content="${authenticated ? 'authenticated' : 'unauthenticated'}" /><title>Demo Portal</title></head><body><main><h1>Demo Portal Web UI Not Built</h1><p>Run <code>npm run portal:web:build</code> to build <code>portal/web/dist</code>.</p></main></body></html>`
+  }
+  let html = readFileSync(indexPath, 'utf8')
+  const authMeta = `<meta name="portal-auth" content="${authenticated ? 'authenticated' : 'unauthenticated'}" />`
+  if (/<meta\s+name="portal-auth"[^>]*>/i.test(html)) {
+    html = html.replace(/<meta\s+name="portal-auth"[^>]*>/i, authMeta)
+  } else if (html.includes('</head>')) {
+    html = html.replace('</head>', `    ${authMeta}\n  </head>`)
+  }
+  if (errorMessage) {
+    const errMeta = `<meta name="portal-auth-error" content="${escapeAttr(errorMessage)}" />`
+    html = html.includes('</head>') ? html.replace('</head>', `    ${errMeta}\n  </head>`) : `${errMeta}\n${html}`
+  }
+  return html
+}
+
 function decodeSlugParam(rawSlug) {
   try {
     return { slug: decodeURIComponent(rawSlug), error: null }
@@ -168,6 +194,7 @@ function createOpenPlcProbe(openplc) {
 export async function createDemoPortalServer({
   repoRoot = REPO_ROOT,
   oipDistDir = resolve(repoRoot, 'Open-Industry-Project', 'dist'),
+  portalWebDistDir = resolve(repoRoot, 'portal', 'web', 'dist'),
   generatedCellsDir = process.env.PORTAL_CELLS_DIR || null,
   accessToken = process.env.DEMO_ACCESS_TOKEN,
   httpHost = '127.0.0.1',
@@ -179,6 +206,7 @@ export async function createDemoPortalServer({
     ? Number(process.env.DAILY_GENERATION_CAP)
     : DEFAULT_DAILY_GENERATION_CAP,
   generateCellFn = undefined,
+  autoDeployDefaultCell = false,
   openplc = {
     url: process.env.OPENPLC_URL || null,
     oipModbusHost: process.env.OIP_MODBUS_HOST || undefined,
@@ -235,19 +263,68 @@ export async function createDemoPortalServer({
   recordEvent(`Demo Portal online (Modbus TCP :${bridge.tcpPort}, strict ${leaseMins}m lease)`)
 
   async function handleAuthRoutes(req, res, url) {
-    if (req.method === 'POST' && url.pathname === '/auth/login') {
-      const raw = (await readRequestBody(req)).toString('utf8')
-      const token = new URLSearchParams(raw).get('token') ?? ''
-      if (!auth.verifyToken(token)) {
-        sendHtml(res, 401, renderLoginPage({ errorMessage: 'Invalid passphrase. Please try again.' }))
+    if (
+      (req.method === 'GET' || req.method === 'HEAD') &&
+      url.pathname.startsWith('/portal-assets/')
+    ) {
+      const resolvedAsset = safeResolveUnder(portalWebDistDir, url.pathname)
+      if (!resolvedAsset) {
+        sendJson(res, 400, { error: 'Invalid portal asset path' })
         return true
       }
-      res.writeHead(302, {
-        location: '/',
-        'set-cookie': auth.issueCookie(req),
-        'cache-control': 'no-store',
-      })
-      res.end()
+      if (existsSync(resolvedAsset) && statSync(resolvedAsset).isFile()) {
+        const ext = extname(resolvedAsset).toLowerCase()
+        const contentType = MIME_TYPES[ext] ?? 'application/octet-stream'
+        res.writeHead(200, {
+          'content-type': contentType,
+          'cache-control': 'public, max-age=31536000, immutable',
+          ...FRAME_PROTECTION_HEADERS,
+        })
+        res.end(req.method === 'HEAD' ? undefined : readFileSync(resolvedAsset))
+        return true
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/auth/login') {
+      const raw = (await readRequestBody(req)).toString('utf8')
+      const isJson = (req.headers['content-type'] ?? '').includes('application/json')
+      let token = ''
+      if (isJson) {
+        try {
+          token = String(JSON.parse(raw || '{}')?.token ?? '')
+        } catch {
+          sendJson(res, 400, { error: 'Invalid JSON request body' })
+          return true
+        }
+      } else {
+        token = new URLSearchParams(raw).get('token') ?? ''
+      }
+
+      if (!auth.verifyToken(token)) {
+        if (isJson) {
+          sendJson(res, 401, { error: 'Invalid passphrase. Please try again.' })
+        } else {
+          sendHtml(
+            res,
+            401,
+            renderPortalShell(portalWebDistDir, {
+              authenticated: false,
+              errorMessage: 'Invalid passphrase. Please try again.',
+            }),
+          )
+        }
+        return true
+      }
+      if (isJson) {
+        sendJson(res, 200, { ok: true }, { 'set-cookie': auth.issueCookie(req) })
+      } else {
+        res.writeHead(302, {
+          location: '/',
+          'set-cookie': auth.issueCookie(req),
+          'cache-control': 'no-store',
+        })
+        res.end()
+      }
       return true
     }
 
@@ -257,7 +334,14 @@ export async function createDemoPortalServer({
         if (url.pathname.startsWith('/api/')) {
           sendJson(res, 401, { error: 'Invalid access token' })
         } else {
-          sendHtml(res, 401, renderLoginPage({ errorMessage: 'Invalid or expired access token.' }))
+          sendHtml(
+            res,
+            401,
+            renderPortalShell(portalWebDistDir, {
+              authenticated: false,
+              errorMessage: 'Invalid or expired access token.',
+            }),
+          )
         }
         return true
       }
@@ -452,6 +536,16 @@ export async function createDemoPortalServer({
   }
 
   function handleOipRoutes(req, res, url) {
+    if (req.method === 'GET' && url.pathname === '/index.html') {
+      res.writeHead(302, {
+        location: '/',
+        'cache-control': 'no-store',
+        ...FRAME_PROTECTION_HEADERS,
+      })
+      res.end()
+      return true
+    }
+
     if (req.method === 'GET' && url.pathname === '/oip-bridge.js') {
       res.writeHead(200, {
         'content-type': 'text/javascript; charset=utf-8',
@@ -515,7 +609,7 @@ export async function createDemoPortalServer({
         if (url.pathname.startsWith('/api/')) {
           sendJson(res, 401, { error: 'Authentication required' })
         } else {
-          sendHtml(res, 401, renderLoginPage())
+          sendHtml(res, 401, renderPortalShell(portalWebDistDir, { authenticated: false }))
         }
         return
       }
@@ -523,7 +617,7 @@ export async function createDemoPortalServer({
       if (await handleApiRoutes(req, res, url)) return
 
       if (req.method === 'GET' && url.pathname === '/') {
-        sendHtml(res, 200, renderConsolePage())
+        sendHtml(res, 200, renderPortalShell(portalWebDistDir, { authenticated: true }))
         return
       }
 
@@ -559,12 +653,55 @@ export async function createDemoPortalServer({
   const address = server.address()
   const actualPort = typeof address === 'object' && address ? address.port : httpPort
 
+  let closing = false
+  let autoDeployPromise = null
+  if (autoDeployDefaultCell && plcConfig.url) {
+    autoDeployPromise = (async () => {
+      try {
+        const entry = cellStore.resolveCellEntry(PROTECTED_CELL_SLUG)
+        if (entry.error || !existsSync(entry.stPath) || !existsSync(entry.modbusMasterPath)) return
+        const readyClient = new OpenPlcClient(plcConfig.url, {
+          pollIntervals: plcConfig.pollIntervals,
+        })
+        await readyClient.waitReady(60_000)
+        if (closing || runtimeState.activeCell) return
+        const deployed = await deployProgram({
+          stPath: entry.stPath,
+          modbusMasterPath: entry.modbusMasterPath,
+          runtimeUrl: plcConfig.url,
+          oipModbusHost: plcConfig.oipModbusHost,
+          username: plcConfig.username,
+          password: plcConfig.password,
+          startAfterDeploy: true,
+          pollIntervals: plcConfig.pollIntervals,
+        })
+        if (closing || runtimeState.activeCell) return
+        runtimeState.activeCell = PROTECTED_CELL_SLUG
+        runtimeState.plcStatus = deployed.plcStatus
+        runtimeState.version = deployed.version
+        runtimeState.md5 = deployed.md5
+        runtimeState.lastDeployedAt = new Date(now()).toISOString()
+        recordEvent(
+          `Boot auto-deployed "${PROTECTED_CELL_SLUG}" to OpenPLC ${deployed.version} (${deployed.plcStatus})`,
+        )
+      } catch (err) {
+        if (!closing) {
+          recordEvent(
+            `Boot auto-deploy skipped: ${err instanceof Error ? err.message : String(err)}`.slice(0, 140),
+          )
+        }
+      }
+    })()
+  }
+
   return {
     httpPort: actualPort,
     modbusPort: bridge.tcpPort,
     baseUrl: `http://${httpHost}:${actualPort}`,
     checkBridgeExpiry: () => bridge.checkExpiry(),
+    waitForAutoDeploy: () => autoDeployPromise ?? Promise.resolve(),
     close: async () => {
+      closing = true
       generation.close()
       await bridge.close()
       await new Promise((resolvePromise) => {
@@ -589,11 +726,13 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     modbusListenPort,
     leaseTimeoutMs,
     oipDistDir: process.env.OIP_DIST_DIR || resolve(REPO_ROOT, 'Open-Industry-Project', 'dist'),
+    portalWebDistDir: process.env.PORTAL_WEB_DIST_DIR || resolve(REPO_ROOT, 'portal', 'web', 'dist'),
     generatedCellsDir: process.env.PORTAL_CELLS_DIR || null,
     dailyGenerationCap:
       process.env.DAILY_GENERATION_CAP !== undefined
         ? Number(process.env.DAILY_GENERATION_CAP)
         : DEFAULT_DAILY_GENERATION_CAP,
+    autoDeployDefaultCell: process.env.AUTO_DEPLOY_DEFAULT_CELL !== '0',
     openplc: {
       url: process.env.OPENPLC_URL || 'https://127.0.0.1:8443',
       oipModbusHost: process.env.OIP_MODBUS_HOST || undefined,

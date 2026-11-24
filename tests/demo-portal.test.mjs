@@ -209,7 +209,7 @@ describe('Demo Portal — Auth Gate', () => {
       assert.equal(appRes.status, 401)
       assert.equal(malformedCookieRes.status, 401)
       const rootHtml = await rootRes.text()
-      assert.match(rootHtml, /<form[^>]+method="POST"[^>]+action="\/auth\/login"/i)
+      assert.match(rootHtml, /<meta name="portal-auth" content="unauthenticated"/i)
 
       assert.equal(await rawUpgradeStatus(portal.httpPort), 401)
       assert.equal(
@@ -577,7 +577,7 @@ describe('Demo Portal — Act 1 Guided Journey UI & Task 1 OpenPLC Deploy', () =
     }
   })
 
-  it('renders the Guided Recruiter Journey UI with Act 1 controls, sticky runtime inspector, native modal dialog, and dark-mode support', async () => {
+  it('serves the built React SPA shell, public /portal-assets/*, JSON login, and redirects /index.html back to /', async () => {
     const oipStub = createTempOipDist()
     const portal = await createDemoPortalServer({
       repoRoot: REPO_ROOT,
@@ -588,23 +588,88 @@ describe('Demo Portal — Act 1 Guided Journey UI & Task 1 OpenPLC Deploy', () =
     })
 
     try {
-      const cookie = await authenticate(portal)
+      // Unauthenticated GET / returns 401 with unauthenticated SPA meta
+      const unauthRes = await fetch(`${portal.baseUrl}/`, { redirect: 'manual' })
+      assert.equal(unauthRes.status, 401)
+      const unauthHtml = await unauthRes.text()
+      assert.match(unauthHtml, /<meta name="portal-auth" content="unauthenticated"/i)
+      assert.match(unauthHtml, /<meta name="color-scheme" content="light dark"/i)
+      assert.match(unauthHtml, /<div id="root"><\/div>/)
+
+      // Public /portal-assets/* JS/CSS bundle serves cleanly before login
+      const scriptMatch = /src="(\/portal-assets\/[^"]+\.js)"/.exec(unauthHtml)
+      assert.ok(scriptMatch, 'expected built /portal-assets/*.js reference in index.html')
+      const assetRes = await fetch(`${portal.baseUrl}${scriptMatch[1]}`)
+      assert.equal(assetRes.status, 200)
+      assert.match(assetRes.headers.get('content-type') ?? '', /javascript/)
+
+      // JSON login issues HttpOnly session cookie
+      const badJsonLogin = await fetch(`${portal.baseUrl}/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: 'wrong-passphrase' }),
+      })
+      assert.equal(badJsonLogin.status, 401)
+
+      const jsonLogin = await fetch(`${portal.baseUrl}/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: TEST_TOKEN }),
+      })
+      assert.equal(jsonLogin.status, 200)
+      const cookie = extractCookie(jsonLogin.headers.get('set-cookie'))
+
+      // Authenticated GET / returns 200 with authenticated SPA meta
       const res = await fetch(`${portal.baseUrl}/`, { headers: { cookie } })
       assert.equal(res.status, 200)
       const html = await res.text()
-
-      assert.match(html, /<meta name="color-scheme" content="light dark"/i)
-      assert.match(html, /<main\b/i)
-      assert.match(html, /<aside\b/i)
-      assert.match(html, /Act 1/i)
-      assert.match(html, /conveyor-cell/)
-      assert.match(html, /Inspection Dwell/)
-      assert.match(html, /Photo-Eye/)
-      assert.match(html, /<dialog\b[^>]*id="inspector-dialog"/i)
+      assert.match(html, /<meta name="portal-auth" content="authenticated"/i)
       assert.doesNotMatch(html, /\bonclick=/i, 'must avoid inline onclick handlers for strict CSP')
-      assert.doesNotMatch(html, /Ticket #\d+/i, 'must not leak internal ticket numbers in recruiter UI')
+
+      // GET /index.html redirects 302 -> / so OIP's "return to demo" never lands on OIP marketing page
+      const idxRes = await fetch(`${portal.baseUrl}/index.html`, {
+        headers: { cookie },
+        redirect: 'manual',
+      })
+      assert.equal(idxRes.status, 302)
+      assert.equal(idxRes.headers.get('location'), '/')
     } finally {
       await portal.close()
+      oipStub.cleanup()
+    }
+  })
+
+  it('auto-deploys conveyor-cell into OpenPLC Runtime on startup when autoDeployDefaultCell is enabled', async () => {
+    const oipStub = createTempOipDist()
+    const mockPlc = await startMockOpenPlc()
+    const portal = await createDemoPortalServer({
+      repoRoot: REPO_ROOT,
+      oipDistDir: oipStub.dir,
+      accessToken: TEST_TOKEN,
+      autoDeployDefaultCell: true,
+      openplc: {
+        url: mockPlc.baseUrl,
+        oipModbusHost: 'demo-portal',
+        username: 'openplc',
+        password: 'test-runtime-password',
+        pollIntervals: { readyMs: 10, compileMs: 10, statusMs: 10 },
+      },
+      httpPort: 0,
+      modbusListenPort: 0,
+    })
+
+    try {
+      await portal.waitForAutoDeploy()
+      const cookie = await authenticate(portal)
+      const statusRes = await fetch(`${portal.baseUrl}/api/status`, { headers: { cookie } })
+      assert.equal(statusRes.status, 200)
+      const status = await statusRes.json()
+      assert.equal(status.openplc.activeCell, 'conveyor-cell')
+      assert.equal(status.openplc.plcStatus, 'RUNNING')
+      assert.ok(status.events.some((e) => e.includes('Boot auto-deployed "conveyor-cell"')))
+    } finally {
+      await portal.close()
+      await mockPlc.close()
       oipStub.cleanup()
     }
   })
@@ -927,7 +992,7 @@ describe('Demo Portal — Persistent Cell Lifecycle & Orchestration Proof API', 
     }
   })
 
-  it('renders Act 2 live AI generator form, SSE pipeline progress, proof trigger, Act 3 Cell library, and AI quota telemetry', async () => {
+  it('rejects POST /api/generate cleanly with 503 when PORTAL_CELLS_DIR is unset', async () => {
     const oipStub = createTempOipDist()
     const portal = await createDemoPortalServer({
       repoRoot: REPO_ROOT,
@@ -939,23 +1004,6 @@ describe('Demo Portal — Persistent Cell Lifecycle & Orchestration Proof API', 
 
     try {
       const cookie = await authenticate(portal)
-      const res = await fetch(`${portal.baseUrl}/`, { headers: { cookie } })
-      assert.equal(res.status, 200)
-      const html = await res.text()
-
-      assert.match(html, /id="generate-form"/)
-      assert.match(html, /<label for="prompt-input"/)
-      assert.match(html, /<textarea[^>]*id="prompt-input"/)
-      assert.match(html, /<label for="cell-name-input"/)
-      assert.match(html, /data-preset-prompt=/)
-      assert.match(html, /<progress[^>]*id="gen-progress"/)
-      assert.match(html, /new EventSource\('\/api\/generate\/events'\)/)
-      assert.match(html, /id="btn-view-proof"/)
-      assert.match(html, /id="generated-cells-list"/)
-      assert.match(html, /id="rt-quota"/)
-      assert.doesNotMatch(html, /\bonclick=/i)
-
-      // When PORTAL_CELLS_DIR (generatedCellsDir) is unset, POST /api/generate fails cleanly with 503 instead of mutating scenes/
       const unconfiguredRes = await fetch(`${portal.baseUrl}/api/generate`, {
         method: 'POST',
         headers: { cookie, 'content-type': 'application/json' },

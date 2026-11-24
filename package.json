@@ -13,6 +13,7 @@
     "cell:verify": "node scripts/verify-cell.mjs",
     "cell:run": "node scripts/run-cell.mjs",
     "portal:start": "node portal/server.mjs",
+    "portal:web:build": "npm --prefix portal/web run build",
     "aws:seed-secret": "node scripts/aws-ec2.mjs seed-secret",
     "aws:provision": "node scripts/aws-ec2.mjs provision",
     "aws:deploy": "node scripts/aws-ec2.mjs deploy",

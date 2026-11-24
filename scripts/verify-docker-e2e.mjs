@@ -103,6 +103,12 @@ async function run() {
   assert.ok(oipHtml.includes('<script src="/oip-bridge.js"></script>'), 'oip-bridge.js must be injected')
   console.log('[seam2] ✓ Unmodified OIP served with COOP/COEP/CORP and pre-boot bridge')
 
+  // 3b. /index.html redirects back to / (prevents landing on OIP upstream marketing page)
+  const idxRedir = await fetch(`${BASE_URL}/index.html`, { headers: { cookie }, redirect: 'manual' })
+  assert.equal(idxRedir.status, 302, '/index.html must redirect to /')
+  assert.equal(idxRedir.headers.get('location'), '/')
+  console.log('[seam2] ✓ GET /index.html redirects 302 -> / (Demo Console)')
+
   // 4. Cold-boot Cells list
   const cellsRes = await fetch(`${BASE_URL}/api/cells`, { headers: { cookie } })
   assert.equal(cellsRes.status, 200)
@@ -257,6 +263,13 @@ async function run() {
       })
       assert.equal(delRes.status, 200)
       console.log(`[seam2] ✓ Deleted test Cell "${slug}" from volume`)
+
+      // Restore protected conveyor-cell in OpenPLC Runtime so Task 1 stays pre-loaded
+      await fetch(`${BASE_URL}/api/cells/conveyor-cell/deploy`, {
+        method: 'POST',
+        headers: { cookie },
+      })
+      console.log('[seam2] ✓ Restored conveyor-cell in OpenPLC Runtime')
     }
 
     // Confirm host git tree was NOT dirtied with scenes/<slug>
