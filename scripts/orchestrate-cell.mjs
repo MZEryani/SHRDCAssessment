@@ -1,17 +1,29 @@
 #!/usr/bin/env node
-import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  createLineSplitter,
+  commitPath,
+  createGitWorktreeWorkspace,
+  mergeWorkerBranches,
+  prepareGreenfieldBase,
+} from './git-worktree-workspace.mjs'
+import {
   inspectNdjsonRetryLine,
+  parseOpenCodeNdjson,
   probeModelPair,
-} from './opencode-probe.mjs'
+  resolveDefaultModels,
+  runOpenCodeAgent,
+} from './opencode-runner.mjs'
 import { createInitialState, transition } from './orchestration-machine.mjs'
 
-export { inspectNdjsonRetryLine }
+export {
+  inspectNdjsonRetryLine,
+  mergeWorkerBranches,
+  parseOpenCodeNdjson,
+  prepareGreenfieldBase,
+}
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -53,351 +65,12 @@ export const WORKER_SPECS = [
   },
 ]
 
-function extractWorktreeFromSkillPart(part) {
-  const skillDir = part?.state?.metadata?.metadata?.directory
-  if (typeof skillDir === 'string') {
-    const normalized = skillDir.replaceAll('\\', '/')
-    if (normalized.includes('/.opencode/skills/')) {
-      return normalized.split('/.opencode/skills/')[0]
-    }
-  }
-  return null
-}
-
-function removeWorktrees(repoRoot, worktreePaths) {
-  for (const wtPath of worktreePaths) {
-    if (!wtPath) continue
-    try {
-      execFileSync('git', ['-C', repoRoot, 'worktree', 'remove', '--force', wtPath], {
-        stdio: 'pipe',
-      })
-    } catch {
-      // Ignore if already removed
-    }
-  }
-  execFileSync('git', ['-C', repoRoot, 'worktree', 'prune'], { stdio: 'pipe' })
-}
-
-export function parseOpenCodeNdjson(rawOutput) {
-  let worktreePath = null
-  let sessionId = null
-  const skillsLoaded = new Set()
-  const toolsUsed = {}
-  const tokens = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }
-  let costUsd = 0
-  let finalText = ''
-  let error = null
-
-  for (const rawLine of rawOutput.split('\n')) {
-    const line = rawLine.replace(/\x1b\[[0-9;]*m/g, '').trim()
-    if (!line) continue
-    if (line.startsWith('worktree ')) {
-      worktreePath = line.slice('worktree '.length).trim()
-      continue
-    }
-    if (!line.startsWith('{')) continue
-
-    let event
-    try {
-      event = JSON.parse(line)
-    } catch {
-      continue
-    }
-
-    if (event.sessionID && !sessionId) sessionId = event.sessionID
-
-    if (event.type === 'tool_use' && event.part) {
-      const tool = event.part.tool
-      if (tool) toolsUsed[tool] = (toolsUsed[tool] ?? 0) + 1
-      if (tool === 'skill' && event.part.state?.input?.id) {
-        skillsLoaded.add(event.part.state.input.id)
-        if (!worktreePath) {
-          worktreePath = extractWorktreeFromSkillPart(event.part)
-        }
-      }
-    } else if (event.type === 'step_finish' && event.part) {
-      if (typeof event.part.cost === 'number') costUsd += event.part.cost
-      const t = event.part.tokens
-      if (t) {
-        tokens.input += t.input ?? 0
-        tokens.output += t.output ?? 0
-        tokens.reasoning += t.reasoning ?? 0
-        tokens.cacheRead += t.cache?.read ?? 0
-        tokens.cacheWrite += t.cache?.write ?? 0
-      }
-    } else if (event.type === 'text' && event.part?.text) {
-      finalText = event.part.text
-    } else if (event.type === 'error' && event.error) {
-      error = event.error.message ?? JSON.stringify(event.error)
-    }
-  }
-
-  return {
-    worktreePath,
-    sessionId,
-    skillsLoaded: [...skillsLoaded],
-    toolsUsed,
-    tokens,
-    costUsd: Number(costUsd.toFixed(6)),
-    finalText: finalText.trim(),
-    error,
-  }
-}
-
-function listWorktreePaths(repoRoot) {
-  const out = execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], {
-    encoding: 'utf8',
-  })
-  return new Set(
-    out
-      .split('\n')
-      .filter((l) => l.startsWith('worktree '))
-      .map((l) => l.slice('worktree '.length).trim()),
-  )
-}
-
 function stepMachine(machine, event) {
   const next = transition(machine, event)
   if (next.lastRejected) {
     throw new Error(`Orchestration state machine rejected ${event.type}: ${next.lastMessage}`)
   }
   return next
-}
-
-function runOpenCodeAsync({
-  agent,
-  model,
-  worktreeName,
-  prompt,
-  cwd = REPO_ROOT,
-  timeoutMs = 240000,
-  maxRetryAttempts = 2,
-}) {
-  return new Promise((resolvePromise, reject) => {
-    const args = ['run', '--standalone', '--auto', '--archived', '--format', 'json', '--agent', agent]
-    if (worktreeName) args.push('--worktree', worktreeName)
-    if (model) args.push('--model', model)
-    args.push(prompt)
-
-    const startedAt = new Date().toISOString()
-    const startMs = performance.now()
-    const child = spawn('opencode', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
-    let stdout = ''
-    let stderr = ''
-    let abortedReason = null
-
-    const abortRun = (reason) => {
-      if (abortedReason) return
-      abortedReason = reason
-      if (!child.killed) child.kill('SIGTERM')
-    }
-
-    const timer = setTimeout(() => {
-      abortRun(`Agent "${agent}" timed out after ${timeoutMs}ms`)
-    }, timeoutMs)
-
-    const splitter = createLineSplitter((line) => {
-      const retryAbort = inspectNdjsonRetryLine(line, { maxRetryAttempts })
-      if (retryAbort) abortRun(`Agent "${agent}" ${retryAbort}`)
-    })
-
-    child.stdout.on('data', (chunk) => {
-      const text = chunk.toString('utf8')
-      stdout += text
-      splitter.push(text)
-    })
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString('utf8')
-    })
-    child.on('error', (err) => {
-      clearTimeout(timer)
-      reject(err)
-    })
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      splitter.flush()
-      const finishedAt = new Date().toISOString()
-      const durationMs = Math.round(performance.now() - startMs)
-      const parsed = parseOpenCodeNdjson(`${stderr}\n${stdout}`)
-      if (abortedReason) {
-        reject(new Error(`${abortedReason} (tools=${JSON.stringify(parsed.toolsUsed)})`))
-        return
-      }
-      if (code !== 0 || parsed.error) {
-        reject(
-          new Error(
-            `OpenCode agent "${agent}" failed (exit ${code}): ${parsed.error ?? stderr.trim()}`,
-          ),
-        )
-        return
-      }
-      resolvePromise({
-        agent,
-        model,
-        startedAt,
-        finishedAt,
-        durationMs,
-        ...parsed,
-      })
-    })
-  })
-}
-
-function linkLocalToolchains(repoRoot, targetDir) {
-  const symlinkType = process.platform === 'win32' ? 'junction' : 'dir'
-  for (const dir of ['.tools', 'Open-Industry-Project']) {
-    const src = join(repoRoot, dir)
-    const dst = join(targetDir, dir)
-    if (existsSync(src) && !existsSync(dst)) {
-      symlinkSync(src, dst, symlinkType)
-    }
-  }
-}
-
-export function prepareGreenfieldBase({
-  repoRoot = REPO_ROOT,
-  runId,
-  stripFiles = GREENFIELD_FILES,
-}) {
-  const baseBranch = `orchestrate/${runId}/base`
-  const tempBase = mkdtempSync(join(tmpdir(), `orchestrate-base-${runId}-`))
-  const baseWorktreePath = join(tempBase, 'base')
-
-  execFileSync(
-    'git',
-    ['-C', repoRoot, 'worktree', 'add', '-b', baseBranch, baseWorktreePath, 'HEAD'],
-    { stdio: 'pipe' },
-  )
-
-  for (const relPath of stripFiles) {
-    const full = join(baseWorktreePath, relPath)
-    if (existsSync(full)) rmSync(full, { force: true })
-  }
-
-  execFileSync('git', ['-C', baseWorktreePath, 'add', '-A'], { stdio: 'pipe' })
-  execFileSync(
-    'git',
-    ['-C', baseWorktreePath, 'commit', '--no-verify', '-m', 'chore: clean greenfield base for orchestration'],
-    { stdio: 'pipe' },
-  )
-
-  linkLocalToolchains(repoRoot, baseWorktreePath)
-
-  const cleanup = () => {
-    removeWorktrees(repoRoot, [baseWorktreePath])
-    try {
-      execFileSync('git', ['-C', repoRoot, 'branch', '-D', baseBranch], { stdio: 'pipe' })
-    } catch {
-      // Ignore if already deleted
-    }
-    rmSync(tempBase, { recursive: true, force: true })
-  }
-
-  return { baseBranch, baseWorktreePath, cleanup }
-}
-
-export function mergeWorkerBranches({ repoRoot, runId, workers, baseRef = 'HEAD' }) {
-  const integrationBranch = `orchestrate/${runId}/integration`
-  const tempBase = mkdtempSync(join(tmpdir(), `orchestrate-int-${runId}-`))
-  const integrationWorktreePath = join(tempBase, 'integration')
-  const createdBranches = [integrationBranch]
-  const mergedBranches = []
-  let conflicts = 0
-
-  for (const worker of workers) {
-    const branch = `orchestrate/${runId}/${worker.name}`
-    createdBranches.push(branch)
-    execFileSync('git', ['-C', worker.worktreePath, 'checkout', '-b', branch], { stdio: 'pipe' })
-    if (baseRef !== 'HEAD') {
-      // Align worker branch parent to baseRef while keeping worker's authored files intact
-      execFileSync('git', ['-C', worker.worktreePath, 'reset', '--mixed', baseRef], {
-        stdio: 'pipe',
-      })
-    }
-    const existingOwned = (worker.ownedFiles ?? []).filter((f) =>
-      existsSync(join(worker.worktreePath, f)),
-    )
-    if (existingOwned.length > 0) {
-      execFileSync('git', ['-C', worker.worktreePath, 'add', '--', ...existingOwned], {
-        stdio: 'pipe',
-      })
-    } else {
-      execFileSync('git', ['-C', worker.worktreePath, 'add', '-A'], { stdio: 'pipe' })
-    }
-    const status = execFileSync(
-      'git',
-      ['-C', worker.worktreePath, 'diff', '--cached', '--name-only'],
-      { encoding: 'utf8' },
-    ).trim()
-    const commitArgs = ['-C', worker.worktreePath, 'commit', '--no-verify', '-m', `chore: worker ${worker.name} output`]
-    if (!status) commitArgs.push('--allow-empty')
-    execFileSync('git', commitArgs, { stdio: 'pipe' })
-    const sha = execFileSync('git', ['-C', worker.worktreePath, 'rev-parse', '--short', 'HEAD'], {
-      encoding: 'utf8',
-    }).trim()
-    const filesChanged = execFileSync(
-      'git',
-      ['-C', worker.worktreePath, 'diff', '--name-only', `${baseRef}..HEAD`],
-      { encoding: 'utf8' },
-    )
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-    mergedBranches.push({
-      worker: worker.name,
-      branch,
-      commitSha: sha,
-      worktreePath: worker.worktreePath,
-      filesChanged,
-    })
-  }
-
-  execFileSync(
-    'git',
-    ['-C', repoRoot, 'worktree', 'add', '-b', integrationBranch, integrationWorktreePath, baseRef],
-    { stdio: 'pipe' },
-  )
-
-  for (const item of mergedBranches) {
-    try {
-      execFileSync(
-        'git',
-        ['-C', integrationWorktreePath, 'merge', '--no-ff', '--no-edit', item.branch],
-        { stdio: 'pipe' },
-      )
-      item.mergeSha = execFileSync(
-        'git',
-        ['-C', integrationWorktreePath, 'rev-parse', '--short', 'HEAD'],
-        { encoding: 'utf8' },
-      ).trim()
-    } catch {
-      conflicts++
-      execFileSync('git', ['-C', integrationWorktreePath, 'merge', '--abort'], { stdio: 'pipe' })
-    }
-  }
-
-  const cleanup = () => {
-    removeWorktrees(repoRoot, [
-      integrationWorktreePath,
-      ...workers.map((w) => w.worktreePath),
-    ])
-    for (const branch of createdBranches) {
-      try {
-        execFileSync('git', ['-C', repoRoot, 'branch', '-D', branch], { stdio: 'pipe' })
-      } catch {
-        // Ignore if already deleted
-      }
-    }
-    rmSync(tempBase, { recursive: true, force: true })
-  }
-
-  return {
-    integrationBranch,
-    integrationWorktreePath,
-    mergedBranches,
-    conflicts,
-    cleanup,
-  }
 }
 
 function runGate(label, cmd, args, cwd) {
@@ -417,24 +90,6 @@ function runGate(label, cmd, args, cwd) {
       durationMs: Math.round(performance.now() - startMs),
       summary: String(err.stderr || err.stdout || err.message).trim().slice(-600),
     }
-  }
-}
-
-function resolveDefaultModels() {
-  const agents = JSON.parse(
-    execFileSync('opencode', ['debug', 'agents', '--standalone'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-    }),
-  )
-  const agentsById = new Map(agents.map((agent) => [agent.id, agent]))
-  const formatModelId = (agentId) => {
-    const model = agentsById.get(agentId)?.model
-    return model ? `${model.providerID ?? model.provider}/${model.modelID ?? model.id}` : undefined
-  }
-  return {
-    orchestrator: process.env.OPENCODE_ORCHESTRATOR_MODEL || formatModelId('orchestrator'),
-    worker: process.env.OPENCODE_WORKER_MODEL || formatModelId('plc-coder'),
   }
 }
 
@@ -560,7 +215,7 @@ export async function runOrchestration({
   usePreflight = false,
   fromScratch = false,
 } = {}) {
-  const defaults = resolveDefaultModels()
+  const defaults = resolveDefaultModels({ cwd: REPO_ROOT })
   let resolvedOrchestratorModel = orchestratorModel ?? defaults.orchestrator
   let resolvedWorkerModel = workerModel ?? defaults.worker
   let fallbackUsed = false
@@ -587,9 +242,10 @@ export async function runOrchestration({
   })
   const runId = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
   const specText = readFileSync(join(REPO_ROOT, specPath), 'utf8')
+  const workspace = createGitWorktreeWorkspace(REPO_ROOT)
 
   const greenfieldBase = fromScratch
-    ? prepareGreenfieldBase({ repoRoot: REPO_ROOT, runId })
+    ? workspace.prepareGreenfieldBase({ runId, stripFiles: GREENFIELD_FILES })
     : null
   const workCwd = greenfieldBase ? greenfieldBase.baseWorktreePath : REPO_ROOT
 
@@ -598,14 +254,14 @@ export async function runOrchestration({
   let merge
   let verification
   let repairPass = null
-  const preStage2Worktrees = listWorktreePaths(REPO_ROOT)
+  const preStage2Worktrees = workspace.listWorktreePaths()
 
   const cleanupNewWorktrees = () => {
-    const current = listWorktreePaths(REPO_ROOT)
+    const current = workspace.listWorktreePaths()
     const created = [...current].filter(
       (p) => !preStage2Worktrees.has(p) && (!greenfieldBase || p !== greenfieldBase.baseWorktreePath),
     )
-    if (created.length > 0) removeWorktrees(REPO_ROOT, created)
+    if (created.length > 0) workspace.removeWorktrees(created)
   }
 
   try {
@@ -628,7 +284,7 @@ export async function runOrchestration({
             specText,
           ].join('\n')
 
-      orchestrator = await runOpenCodeAsync({
+      orchestrator = await runOpenCodeAgent({
         agent: 'orchestrator',
         model: resolvedOrchestratorModel,
         prompt: stage1Prompt,
@@ -647,12 +303,11 @@ export async function runOrchestration({
           `Orchestrator did not write ${synthesizedContractPath} (tools=${JSON.stringify(orchestrator.toolsUsed)}): ${orchestrator.finalText.slice(0, 300)}`,
         )
       }
-      execFileSync('git', ['-C', workCwd, 'add', 'openplc/io-contract.json'], { stdio: 'pipe' })
-      execFileSync(
-        'git',
-        ['-C', workCwd, 'commit', '--no-verify', '-m', 'feat: orchestrator synthesized canonical I/O Contract'],
-        { stdio: 'pipe' },
-      )
+      commitPath({
+        cwd: workCwd,
+        pathSpec: 'openplc/io-contract.json',
+        message: 'feat: orchestrator synthesized canonical I/O Contract',
+      })
     }
 
     const contract = JSON.parse(readFileSync(join(workCwd, 'openplc', 'io-contract.json'), 'utf8'))
@@ -663,7 +318,7 @@ export async function runOrchestration({
     )
     const workerSettled = await Promise.allSettled(
       WORKER_SPECS.map((workerSpec) =>
-        runOpenCodeAsync({
+        runOpenCodeAgent({
           agent: workerSpec.agent,
           model: resolvedWorkerModel,
           worktreeName: `${runId}-${workerSpec.agent}`,
@@ -714,8 +369,7 @@ export async function runOrchestration({
     console.log(`[orchestrate:${runId}] Stage 3: Merging 3 worker worktree branches into integration branch...`)
     const baseRef = greenfieldBase ? greenfieldBase.baseBranch : 'HEAD'
     try {
-      merge = mergeWorkerBranches({
-        repoRoot: REPO_ROOT,
+      merge = workspace.mergeWorkerBranches({
         runId,
         baseRef,
         workers: workerResults.map((w) => ({
@@ -738,7 +392,7 @@ export async function runOrchestration({
     }
     machine = stepMachine(machine, { type: 'MERGE_CLEAN' })
 
-    linkLocalToolchains(REPO_ROOT, merge.integrationWorktreePath)
+    workspace.linkLocalToolchains(merge.integrationWorktreePath)
 
     const runAllGates = () => {
       const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
@@ -781,7 +435,7 @@ export async function runOrchestration({
         `[orchestrate:${runId}] Stage 4 Repair Pass ${machine.repairAttempts}/${machine.maxPostMergeRepairs}: Orchestrator patching integration worktree...\n${failureSummary}`,
       )
 
-      repairPass = await runOpenCodeAsync({
+      repairPass = await runOpenCodeAgent({
         agent: 'orchestrator',
         model: resolvedOrchestratorModel,
         cwd: merge.integrationWorktreePath,

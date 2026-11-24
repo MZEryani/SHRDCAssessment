@@ -15,7 +15,7 @@
     "test:tracer": "node --test tests/tracer-modbus.test.mjs",
     "test:e2e": "node --test tests/conveyor-cell-e2e.test.mjs",
     "test:opencode": "node --test tests/opencode-config.test.mjs",
-    "test:orchestrate": "node --test tests/orchestrate-cell.test.mjs",
+    "test:orchestrate": "node --test tests/opencode-runner.test.mjs tests/git-worktree-workspace.test.mjs tests/orchestrate-cell.test.mjs",
     "opencode:probe": "node scripts/opencode-probe.mjs",
     "orchestrate": "node scripts/orchestrate-cell.mjs",
     "hooks:install": "git config core.hooksPath .githooks",
