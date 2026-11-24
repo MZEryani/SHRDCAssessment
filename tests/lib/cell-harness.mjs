@@ -9,6 +9,21 @@ import {
   sleep,
 } from '../../Open-Industry-Project/scripts/lib/conveyor-loop.mjs'
 import { listenModbus } from '../../Open-Industry-Project/scripts/lib/modbus-tcp-listen.mjs'
+import {
+  assertBoxSpacing,
+  createTagOverlay,
+  deriveBoxLengthFromScene,
+  measureMinBoxGap,
+  restingSignalValue,
+} from './cell-invariants.mjs'
+
+export {
+  assertBoxSpacing,
+  createTagOverlay,
+  deriveBoxLengthFromScene,
+  measureMinBoxGap,
+  restingSignalValue,
+}
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DEFAULT_OPENPLC_URL = process.env.OPENPLC_URL ?? 'https://127.0.0.1:8443'
@@ -23,19 +38,6 @@ const FC_WRITE_MULTIPLE_REGISTERS = 16
 
 function defaultSignalValue(signal) {
   return signal.type === 'BOOL' ? false : 0
-}
-
-export function deriveBoxLengthFromScene(scene, contract) {
-  const spawnerPart =
-    scene.parts.find((p) => p.packageId === 'oip.box-spawner') ??
-    scene.parts.find((p) =>
-      contract?.signals?.some((s) => s.sceneRole?.partId === p.id && typeof p.params?.length === 'number'),
-    )
-  const length = spawnerPart?.params?.length
-  if (typeof length !== 'number' || !Number.isFinite(length) || length <= 0) {
-    throw new Error('Could not derive positive box length from scene spawner part parameters')
-  }
-  return length
 }
 
 /**
