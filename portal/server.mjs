@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url'
 import { createSessionAuth } from './auth.mjs'
 import { createCellStore } from './cell-store.mjs'
 import { renderConsolePage, renderLoginPage } from './console-ui.mjs'
+import {
+  createGenerationManager,
+  DEFAULT_DAILY_GENERATION_CAP,
+} from './generation-manager.mjs'
 import { createModbusBridge, DEFAULT_LEASE_TIMEOUT_MS } from './modbus-bridge.mjs'
 import { acceptWebSocket } from './ws-server.mjs'
 import { deployProgram } from '../scripts/openplc-deploy.mjs'
@@ -164,12 +168,17 @@ function createOpenPlcProbe(openplc) {
 export async function createDemoPortalServer({
   repoRoot = REPO_ROOT,
   oipDistDir = resolve(repoRoot, 'Open-Industry-Project', 'dist'),
+  generatedCellsDir = process.env.PORTAL_CELLS_DIR || null,
   accessToken = process.env.DEMO_ACCESS_TOKEN,
   httpHost = '127.0.0.1',
   httpPort = 3000,
   modbusListenHost = process.env.MODBUS_LISTEN_HOST || '127.0.0.1',
   modbusListenPort = 5020,
   leaseTimeoutMs = DEFAULT_LEASE_TIMEOUT_MS,
+  dailyGenerationCap = process.env.DAILY_GENERATION_CAP !== undefined
+    ? Number(process.env.DAILY_GENERATION_CAP)
+    : DEFAULT_DAILY_GENERATION_CAP,
+  generateCellFn = undefined,
   openplc = {
     url: process.env.OPENPLC_URL || null,
     oipModbusHost: process.env.OIP_MODBUS_HOST || undefined,
@@ -189,7 +198,7 @@ export async function createDemoPortalServer({
   }
 
   const auth = createSessionAuth({ accessToken, forceSecureCookies })
-  const cellStore = createCellStore({ repoRoot })
+  const cellStore = createCellStore({ repoRoot, generatedCellsDir })
   const bridgeScriptBytes = readFileSync(join(PORTAL_DIR, 'oip-bridge.js'))
   const recentEvents = []
   const recordEvent = (message) => {
@@ -197,6 +206,14 @@ export async function createDemoPortalServer({
     recentEvents.unshift(`${stamp} · ${message}`)
     if (recentEvents.length > 20) recentEvents.pop()
   }
+
+  const generation = createGenerationManager({
+    cellStore,
+    generateCellFn,
+    dailyCap: dailyGenerationCap,
+    now,
+    onEvent: recordEvent,
+  })
 
   const runtimeState = {
     activeCell: null,
@@ -266,7 +283,61 @@ export async function createDemoPortalServer({
         ok: true,
         openplc: liveOpenPlc,
         bridge: bridge.status(),
+        generation: generation.status(),
         events: recentEvents,
+      })
+      return true
+    }
+
+    if (url.pathname === '/api/generate/events') {
+      if (req.method !== 'GET') {
+        sendJson(res, 405, { error: 'Use GET for generation event stream' }, { allow: 'GET' })
+        return true
+      }
+      generation.subscribe(req, res)
+      return true
+    }
+
+    if (url.pathname === '/api/generate') {
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { error: 'Use POST to start Cell generation' }, { allow: 'POST' })
+        return true
+      }
+      let raw
+      try {
+        raw = (await readRequestBody(req)).toString('utf8')
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Request body error'
+        sendJson(res, msg === 'Request body too large' ? 413 : 400, { error: msg })
+        return true
+      }
+      let body
+      try {
+        body = raw ? JSON.parse(raw) : {}
+      } catch {
+        sendJson(res, 400, { error: 'Invalid JSON request body' })
+        return true
+      }
+      const result = generation.start({ prompt: body?.prompt, name: body?.name })
+      sendJson(res, result.status, result)
+      return true
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/cells') {
+      sendJson(res, 200, { cells: cellStore.listCells() })
+      return true
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/proof') {
+      const proofMdPath = join(repoRoot, 'docs', 'orchestration-proof.md')
+      const proofJsonPath = join(repoRoot, 'docs', 'orchestration-proof.json')
+      if (!existsSync(proofMdPath) || !existsSync(proofJsonPath)) {
+        sendJson(res, 404, { error: 'Committed orchestration proof not found' })
+        return true
+      }
+      sendJson(res, 200, {
+        markdown: readFileSync(proofMdPath, 'utf8'),
+        json: JSON.parse(readFileSync(proofJsonPath, 'utf8')),
       })
       return true
     }
@@ -347,19 +418,34 @@ export async function createDemoPortalServer({
     }
 
     const cellDetailMatch = /^\/api\/cells\/([^/]+)$/.exec(url.pathname)
-    if (cellDetailMatch && req.method === 'GET') {
+    if (cellDetailMatch) {
       const { slug, error: decodeErr } = decodeSlugParam(cellDetailMatch[1])
       if (decodeErr) {
         sendJson(res, 400, { error: decodeErr })
         return true
       }
-      const details = cellStore.getCellDetails(slug)
-      if (details.error) {
-        sendJson(res, details.status ?? 404, { error: details.error })
+      if (req.method === 'GET') {
+        const details = cellStore.getCellDetails(slug)
+        if (details.error) {
+          sendJson(res, details.status ?? 404, { error: details.error })
+          return true
+        }
+        sendJson(res, 200, details)
         return true
       }
-      sendJson(res, 200, details)
-      return true
+      if (req.method === 'DELETE') {
+        const result = cellStore.deleteCell(slug)
+        if (result.error) {
+          sendJson(res, result.status ?? 404, { error: result.error })
+          return true
+        }
+        if (runtimeState.activeCell === slug) {
+          runtimeState.activeCell = null
+        }
+        recordEvent(`Deleted generated Cell "${slug}"`)
+        sendJson(res, 200, result)
+        return true
+      }
     }
 
     return false
@@ -479,6 +565,7 @@ export async function createDemoPortalServer({
     baseUrl: `http://${httpHost}:${actualPort}`,
     checkBridgeExpiry: () => bridge.checkExpiry(),
     close: async () => {
+      generation.close()
       await bridge.close()
       await new Promise((resolvePromise) => {
         server.closeAllConnections?.()
@@ -502,6 +589,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     modbusListenPort,
     leaseTimeoutMs,
     oipDistDir: process.env.OIP_DIST_DIR || resolve(REPO_ROOT, 'Open-Industry-Project', 'dist'),
+    generatedCellsDir: process.env.PORTAL_CELLS_DIR || null,
+    dailyGenerationCap:
+      process.env.DAILY_GENERATION_CAP !== undefined
+        ? Number(process.env.DAILY_GENERATION_CAP)
+        : DEFAULT_DAILY_GENERATION_CAP,
     openplc: {
       url: process.env.OPENPLC_URL || 'https://127.0.0.1:8443',
       oipModbusHost: process.env.OIP_MODBUS_HOST || undefined,

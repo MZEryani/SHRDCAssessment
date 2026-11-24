@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { resolveCellPaths } from '../scripts/verify-cell.mjs'
 
@@ -85,25 +85,113 @@ function walkOipProjectFolder(rootDir) {
   }
 }
 
-export function createCellStore({ repoRoot }) {
+export function createCellStore({ repoRoot, generatedCellsDir = null }) {
+  const resolvedGenDir = generatedCellsDir ? resolve(generatedCellsDir) : null
+
+  function resolveGeneratedDir(slug) {
+    if (!resolvedGenDir) return null
+    const candidate = resolve(resolvedGenDir, slug)
+    if (!candidate.startsWith(`${resolvedGenDir}/`)) return null
+    return candidate
+  }
+
   function resolveCellEntry(slug) {
     if (!isValidCellSlug(slug)) {
       return { error: 'Invalid Cell slug', status: 400 }
     }
 
-    if (slug !== PROTECTED_CELL_SLUG) {
-      return { error: `Cell "${slug}" not found`, status: 404 }
+    if (slug === PROTECTED_CELL_SLUG) {
+      const paths = resolveCellPaths({ repoRoot: resolve(repoRoot), slug: PROTECTED_CELL_SLUG })
+      if (!existsSync(paths.cellDir)) {
+        return { error: `Cell "${slug}" not found`, status: 404 }
+      }
+      return {
+        slug,
+        protected: true,
+        ...paths,
+      }
     }
 
-    const paths = resolveCellPaths({ repoRoot: resolve(repoRoot), slug: PROTECTED_CELL_SLUG })
-    if (!existsSync(paths.cellDir)) {
-      return { error: `Cell "${slug}" not found`, status: 404 }
+    const genDir = resolveGeneratedDir(slug)
+    if (genDir && existsSync(join(genDir, 'project.json'))) {
+      return {
+        slug,
+        protected: false,
+        cellDir: genDir,
+        contractPath: join(genDir, 'io-contract.json'),
+        stPath: join(genDir, 'plc', 'program.st'),
+        modbusMasterPath: join(genDir, 'plc', 'modbus_master.json'),
+        scenePath: join(genDir, 'scene.json'),
+        testPath: join(genDir, 'tests', 'program.test.st'),
+        processSpecPath: join(genDir, 'process-spec.md'),
+        reportJsonPath: join(genDir, 'generation-report.json'),
+      }
     }
+
+    return { error: `Cell "${slug}" not found`, status: 404 }
+  }
+
+  function summarizeCell(entry) {
+    let signalCount = 0
+    try {
+      const contract = JSON.parse(readFileSync(entry.contractPath, 'utf8'))
+      signalCount = Array.isArray(contract.signals) ? contract.signals.length : 0
+    } catch {
+      // Optional metadata
+    }
+
+    let report = null
+    if (entry.reportJsonPath && existsSync(entry.reportJsonPath)) {
+      try {
+        report = JSON.parse(readFileSync(entry.reportJsonPath, 'utf8'))
+      } catch {
+        // Ignore malformed report
+      }
+    }
+
+    let description = ''
+    if (entry.slug === PROTECTED_CELL_SLUG) {
+      description =
+        'Photo-Eye-gated 5-box Batch conveyor with 2s Inspection Dwell, Jam Fault, and fail-safe NC E-Stop.'
+    } else if (entry.processSpecPath && existsSync(entry.processSpecPath)) {
+      description =
+        readFileSync(entry.processSpecPath, 'utf8')
+          .split('\n')
+          .map((l) => l.trim())
+          .find((l) => l && !l.startsWith('#')) ?? ''
+    }
+
     return {
-      slug,
-      protected: true,
-      ...paths,
+      slug: entry.slug,
+      protected: entry.protected,
+      signalCount,
+      description,
+      capturedAt: report?.capturedAt ?? null,
+      costUsd: report?.totals?.costUsd ?? null,
+      wallTimeMs: report?.totals?.durationMs ?? null,
     }
+  }
+
+  function listCells() {
+    const items = []
+    const refEntry = resolveCellEntry(PROTECTED_CELL_SLUG)
+    if (!refEntry.error) {
+      items.push(summarizeCell(refEntry))
+    }
+
+    if (resolvedGenDir && existsSync(resolvedGenDir)) {
+      const entries = readdirSync(resolvedGenDir, { withFileTypes: true })
+      entries.sort((a, b) => a.name.localeCompare(b.name))
+      for (const dirent of entries) {
+        if (!dirent.isDirectory()) continue
+        const slug = dirent.name
+        if (slug === PROTECTED_CELL_SLUG || !isValidCellSlug(slug)) continue
+        const entry = resolveCellEntry(slug)
+        if (!entry.error) items.push(summarizeCell(entry))
+      }
+    }
+
+    return items
   }
 
   function getCellDetails(slug) {
@@ -111,11 +199,27 @@ export function createCellStore({ repoRoot }) {
     if (entry.error) return entry
 
     const stSource = existsSync(entry.stPath) ? readFileSync(entry.stPath, 'utf8') : ''
-    const ioContract = existsSync(entry.contractPath)
-      ? JSON.parse(readFileSync(entry.contractPath, 'utf8'))
-      : null
-    const specPath = join(repoRoot, 'docs', 'cell-process-spec.md')
-    const processSpec = existsSync(specPath) ? readFileSync(specPath, 'utf8') : ''
+    let ioContract = null
+    if (existsSync(entry.contractPath)) {
+      try {
+        ioContract = JSON.parse(readFileSync(entry.contractPath, 'utf8'))
+      } catch {
+        ioContract = null
+      }
+    }
+    const specPath =
+      slug === PROTECTED_CELL_SLUG
+        ? join(repoRoot, 'docs', 'cell-process-spec.md')
+        : entry.processSpecPath
+    const processSpec = specPath && existsSync(specPath) ? readFileSync(specPath, 'utf8') : ''
+    let generationReport = null
+    if (entry.reportJsonPath && existsSync(entry.reportJsonPath)) {
+      try {
+        generationReport = JSON.parse(readFileSync(entry.reportJsonPath, 'utf8'))
+      } catch {
+        // Optional
+      }
+    }
 
     return {
       slug: entry.slug,
@@ -123,6 +227,7 @@ export function createCellStore({ repoRoot }) {
       stSource,
       ioContract,
       processSpec,
+      generationReport,
     }
   }
 
@@ -139,9 +244,33 @@ export function createCellStore({ repoRoot }) {
     }
   }
 
+  function deleteCell(slug) {
+    if (!isValidCellSlug(slug)) {
+      return { error: 'Invalid Cell slug', status: 400 }
+    }
+    if (slug === PROTECTED_CELL_SLUG) {
+      return { error: `Protected reference Cell "${PROTECTED_CELL_SLUG}" cannot be deleted`, status: 403 }
+    }
+    const genDir = resolveGeneratedDir(slug)
+    if (!genDir || !existsSync(genDir)) {
+      return { error: `Cell "${slug}" not found`, status: 404 }
+    }
+    rmSync(genDir, { recursive: true, force: true })
+    return { ok: true, deleted: slug }
+  }
+
+  function ensureGeneratedCellsDir() {
+    if (resolvedGenDir) mkdirSync(resolvedGenDir, { recursive: true })
+    return resolvedGenDir
+  }
+
   return {
+    generatedCellsDir: resolvedGenDir,
+    ensureGeneratedCellsDir,
     resolveCellEntry,
+    listCells,
     getCellDetails,
     readOipFolderBundle,
+    deleteCell,
   }
 }

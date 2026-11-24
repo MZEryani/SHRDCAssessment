@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createServer as createHttpsServer } from 'node:https'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -603,6 +603,365 @@ describe('Demo Portal — Act 1 Guided Journey UI & Task 1 OpenPLC Deploy', () =
       assert.match(html, /<dialog\b[^>]*id="inspector-dialog"/i)
       assert.doesNotMatch(html, /\bonclick=/i, 'must avoid inline onclick handlers for strict CSP')
       assert.doesNotMatch(html, /Ticket #\d+/i, 'must not leak internal ticket numbers in recruiter UI')
+    } finally {
+      await portal.close()
+      oipStub.cleanup()
+    }
+  })
+})
+
+describe('Demo Portal — Persistent Cell Lifecycle & Orchestration Proof API', () => {
+  it('starts clean on cold boot with only conveyor-cell, serves committed proof, and guards deletion against protected Cell and traversal', async () => {
+    const oipStub = createTempOipDist()
+    const cellsDir = mkdtempSync(join(tmpdir(), 'portal-cells-'))
+    const portal = await createDemoPortalServer({
+      repoRoot: REPO_ROOT,
+      oipDistDir: oipStub.dir,
+      generatedCellsDir: cellsDir,
+      accessToken: TEST_TOKEN,
+      httpPort: 0,
+      modbusListenPort: 0,
+    })
+
+    try {
+      const cookie = await authenticate(portal)
+
+      // Cold start: only protected conveyor-cell exists
+      const listRes = await fetch(`${portal.baseUrl}/api/cells`, { headers: { cookie } })
+      assert.equal(listRes.status, 200)
+      const list = await listRes.json()
+      assert.equal(list.cells.length, 1)
+      assert.equal(list.cells[0].slug, 'conveyor-cell')
+      assert.equal(list.cells[0].protected, true)
+
+      // Committed orchestration proof endpoint returns parsed JSON + markdown
+      const proofRes = await fetch(`${portal.baseUrl}/api/proof`, { headers: { cookie } })
+      assert.equal(proofRes.status, 200)
+      const proof = await proofRes.json()
+      assert.ok(proof.json?.runId, 'expected committed proof runId')
+      assert.match(proof.markdown, /OpenCode Parallel/)
+
+      // Protected conveyor-cell cannot be deleted (403); traversal rejected (400); missing returns 404
+      const delProtected = await fetch(`${portal.baseUrl}/api/cells/conveyor-cell`, {
+        method: 'DELETE',
+        headers: { cookie },
+      })
+      assert.equal(delProtected.status, 403)
+
+      const delTraversal = await fetch(`${portal.baseUrl}/api/cells/..%2Fscenes`, {
+        method: 'DELETE',
+        headers: { cookie },
+      })
+      assert.equal(delTraversal.status, 400)
+
+      const delMissing = await fetch(`${portal.baseUrl}/api/cells/does-not-exist`, {
+        method: 'DELETE',
+        headers: { cookie },
+      })
+      assert.equal(delMissing.status, 404)
+    } finally {
+      await portal.close()
+      rmSync(cellsDir, { recursive: true, force: true })
+      oipStub.cleanup()
+    }
+  })
+
+  it('streams 4-stage SSE progress, enforces single-flight 409 and daily cap 429, and persists/inspects/deploys/deletes generated Cells', async () => {
+    let fakeNow = Date.parse('2026-11-24T10:00:00.000Z')
+    const oipStub = createTempOipDist()
+    const cellsDir = mkdtempSync(join(tmpdir(), 'portal-gen-cells-'))
+    const mockPlc = await startMockOpenPlc()
+
+    let releaseFirstRun
+    let callCount = 0
+
+    const fakeGenerateCell = async ({ prompt, name, cellsDir: outRoot, onEvent, log }) => {
+      callCount += 1
+      const slug = name || `gen-cell-${callCount}`
+      onEvent({ stage: 'preflight', slug })
+      log(`[test] preflight ok for ${slug}`)
+      onEvent({ stage: 'stage1', slug, model: 'google/gemini-4-neon' })
+
+      if (callCount === 1) {
+        await new Promise((r) => {
+          releaseFirstRun = r
+        })
+      }
+
+      onEvent({ stage: 'stage2', slug, model: 'google/gemini-3.8-flash' })
+      onEvent({ stage: 'stage3', slug })
+      onEvent({ stage: 'stage4', slug })
+
+      const targetDir = join(outRoot, slug)
+      mkdirSync(join(targetDir, 'plc'), { recursive: true })
+      writeFileSync(
+        join(targetDir, 'project.json'),
+        JSON.stringify({ version: 1, name: slug, scene: 'scene.json', program: ['plc/program.st'], tests: [] }),
+        'utf8',
+      )
+      writeFileSync(
+        join(targetDir, 'scene.json'),
+        JSON.stringify({ version: 4, parts: [], plcs: [{ name: 'PLC1', runsOn: 'plc', protocol: 'serve', connect: true }] }),
+        'utf8',
+      )
+      writeFileSync(
+        join(targetDir, 'plc', 'program.st'),
+        readFileSync(join(REPO_ROOT, 'scenes', 'conveyor-cell', 'plc', 'program.st'), 'utf8'),
+        'utf8',
+      )
+      writeFileSync(
+        join(targetDir, 'plc', 'modbus_master.json'),
+        readFileSync(join(REPO_ROOT, 'openplc', 'conveyor_cell_modbus_master.json'), 'utf8'),
+        'utf8',
+      )
+      writeFileSync(
+        join(targetDir, 'io-contract.json'),
+        readFileSync(join(REPO_ROOT, 'openplc', 'io-contract.json'), 'utf8'),
+        'utf8',
+      )
+      writeFileSync(join(targetDir, 'process-spec.md'), `# ${slug}\n\n${prompt}\n`, 'utf8')
+      const report = {
+        ok: true,
+        runId: `run-${callCount}`,
+        slug,
+        capturedAt: new Date(fakeNow).toISOString(),
+        totals: { durationMs: 4200, costUsd: 0.12 },
+        verification: { ok: true, gates: { contract: { passed: true }, plcTest: { passed: true }, oipValidate: { passed: true } } },
+      }
+      writeFileSync(join(targetDir, 'generation-report.json'), JSON.stringify(report), 'utf8')
+      onEvent({ stage: 'done', slug, mode: 'generate', outputDir: targetDir })
+      return report
+    }
+
+    const portal = await createDemoPortalServer({
+      repoRoot: REPO_ROOT,
+      oipDistDir: oipStub.dir,
+      generatedCellsDir: cellsDir,
+      accessToken: TEST_TOKEN,
+      dailyGenerationCap: 2,
+      generateCellFn: fakeGenerateCell,
+      openplc: {
+        url: mockPlc.baseUrl,
+        oipModbusHost: 'demo-portal',
+        username: 'openplc',
+        password: 'test-runtime-password',
+        pollIntervals: { readyMs: 10, compileMs: 10, statusMs: 10 },
+      },
+      now: () => fakeNow,
+      httpPort: 0,
+      modbusListenPort: 0,
+    })
+
+    try {
+      const cookie = await authenticate(portal)
+
+      // Open SSE stream before starting generation
+      const sseController = new AbortController()
+      const sseRes = await fetch(`${portal.baseUrl}/api/generate/events`, {
+        headers: { cookie },
+        signal: sseController.signal,
+      })
+      assert.equal(sseRes.status, 200)
+      assert.match(sseRes.headers.get('content-type') ?? '', /text\/event-stream/)
+
+      const receivedEvents = []
+      const sseReader = sseRes.body.getReader()
+      const decoder = new TextDecoder()
+      let sseBuffer = ''
+      const readEvents = (async () => {
+        try {
+          while (true) {
+            const { done, value } = await sseReader.read()
+            if (done) break
+            sseBuffer += decoder.decode(value, { stream: true })
+            const frames = sseBuffer.split('\n\n')
+            sseBuffer = frames.pop() ?? ''
+            for (const frame of frames) {
+              const evMatch = /^event:\s*(.+)$/m.exec(frame)
+              const dataMatch = /^data:\s*(.+)$/m.exec(frame)
+              if (evMatch && dataMatch) {
+                receivedEvents.push({ event: evMatch[1].trim(), data: JSON.parse(dataMatch[1]) })
+              }
+            }
+          }
+        } catch {
+          // Aborted on cleanup
+        }
+      })()
+
+      // Start Run 1
+      const start1 = await fetch(`${portal.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: 'A roller conveyor sorting red boxes', name: 'sorter-live' }),
+      })
+      assert.equal(start1.status, 202)
+      const started1 = await start1.json()
+      assert.equal(started1.ok, true)
+      assert.equal(started1.slug, 'sorter-live')
+
+      // Wait until stage1 pauses on releaseFirstRun
+      while (!releaseFirstRun) await new Promise((r) => setTimeout(r, 5))
+
+      // Overlapping request rejected with HTTP 409 (single-flight)
+      const overlap = await fetch(`${portal.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Another cell while busy', name: 'busy-cell' }),
+      })
+      assert.equal(overlap.status, 409)
+
+      // Release Run 1 and wait for SSE 'done'
+      releaseFirstRun()
+      const deadline = Date.now() + 3000
+      while (!receivedEvents.some((e) => e.event === 'done') && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 10))
+      }
+      sseController.abort()
+      await readEvents
+
+      const stages = receivedEvents.filter((e) => e.event === 'stage').map((e) => e.data.stage)
+      assert.ok(stages.includes('stage1'))
+      assert.ok(stages.includes('stage2'))
+      assert.ok(stages.includes('stage3'))
+      assert.ok(stages.includes('stage4'))
+      assert.ok(receivedEvents.some((e) => e.event === 'done' && e.data.slug === 'sorter-live'))
+
+      // Quota reflects 1/2 used
+      const statusRes = await fetch(`${portal.baseUrl}/api/status`, { headers: { cookie } })
+      const status = await statusRes.json()
+      assert.equal(status.generation.quota.used, 1)
+      assert.equal(status.generation.quota.cap, 2)
+
+      // Generated Cell appears in list, inspects cleanly, serves OIP folder, deploys to OpenPLC, and deletes safely
+      const listRes = await fetch(`${portal.baseUrl}/api/cells`, { headers: { cookie } })
+      const list = await listRes.json()
+      assert.deepEqual(
+        list.cells.map((c) => c.slug),
+        ['conveyor-cell', 'sorter-live'],
+      )
+
+      const detailRes = await fetch(`${portal.baseUrl}/api/cells/sorter-live`, { headers: { cookie } })
+      const details = await detailRes.json()
+      assert.equal(details.generationReport?.runId, 'run-1')
+
+      const folderRes = await fetch(`${portal.baseUrl}/api/cells/sorter-live/oip-folder`, { headers: { cookie } })
+      assert.equal(folderRes.status, 200)
+
+      const deployRes = await fetch(`${portal.baseUrl}/api/cells/sorter-live/deploy`, {
+        method: 'POST',
+        headers: { cookie },
+      })
+      assert.equal(deployRes.status, 200)
+      assert.equal((await deployRes.json()).launchUrl, '/app/?cell=sorter-live')
+
+      // Protected conveyor-cell overwrite rejected with 403, invalid slug with 400, existing slug with 409 (without burning quota)
+      const overwriteProtected = await fetch(`${portal.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Try overwriting reference cell', name: 'conveyor-cell' }),
+      })
+      assert.equal(overwriteProtected.status, 403)
+
+      const badSlug = await fetch(`${portal.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Bad slug', name: '../escape' }),
+      })
+      assert.equal(badSlug.status, 400)
+
+      const dupSlug = await fetch(`${portal.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Duplicate existing slug', name: 'sorter-live' }),
+      })
+      assert.equal(dupSlug.status, 409)
+      const quotaAfterGuard = (await (await fetch(`${portal.baseUrl}/api/status`, { headers: { cookie } })).json()).generation.quota
+      assert.equal(quotaAfterGuard.used, 1)
+
+      const delRes = await fetch(`${portal.baseUrl}/api/cells/sorter-live`, {
+        method: 'DELETE',
+        headers: { cookie },
+      })
+      assert.equal(delRes.status, 200)
+      const afterDel = await (await fetch(`${portal.baseUrl}/api/cells`, { headers: { cookie } })).json()
+      assert.deepEqual(
+        afterDel.cells.map((c) => c.slug),
+        ['conveyor-cell'],
+      )
+
+      // Run 2 hits daily cap (2/2), then Run 3 is rejected with HTTP 429
+      const start2 = await fetch(`${portal.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Second cell today', name: 'cell-two' }),
+      })
+      assert.equal(start2.status, 202)
+      while ((await (await fetch(`${portal.baseUrl}/api/status`, { headers: { cookie } })).json()).generation.running) {
+        await new Promise((r) => setTimeout(r, 10))
+      }
+
+      const capped = await fetch(`${portal.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Third cell over cap', name: 'cell-three' }),
+      })
+      assert.equal(capped.status, 429)
+
+      // Next UTC day resets daily cap
+      fakeNow += 24 * 60 * 60 * 1000
+      const nextDay = await fetch(`${portal.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Next day cell', name: 'cell-next-day' }),
+      })
+      assert.equal(nextDay.status, 202)
+      while ((await (await fetch(`${portal.baseUrl}/api/status`, { headers: { cookie } })).json()).generation.running) {
+        await new Promise((r) => setTimeout(r, 10))
+      }
+    } finally {
+      await portal.close()
+      await mockPlc.close()
+      rmSync(cellsDir, { recursive: true, force: true })
+      oipStub.cleanup()
+    }
+  })
+
+  it('renders Act 2 live AI generator form, SSE pipeline progress, proof trigger, Act 3 Cell library, and AI quota telemetry', async () => {
+    const oipStub = createTempOipDist()
+    const portal = await createDemoPortalServer({
+      repoRoot: REPO_ROOT,
+      oipDistDir: oipStub.dir,
+      accessToken: TEST_TOKEN,
+      httpPort: 0,
+      modbusListenPort: 0,
+    })
+
+    try {
+      const cookie = await authenticate(portal)
+      const res = await fetch(`${portal.baseUrl}/`, { headers: { cookie } })
+      assert.equal(res.status, 200)
+      const html = await res.text()
+
+      assert.match(html, /id="generate-form"/)
+      assert.match(html, /<label for="prompt-input"/)
+      assert.match(html, /<textarea[^>]*id="prompt-input"/)
+      assert.match(html, /<label for="cell-name-input"/)
+      assert.match(html, /data-preset-prompt=/)
+      assert.match(html, /<progress[^>]*id="gen-progress"/)
+      assert.match(html, /new EventSource\('\/api\/generate\/events'\)/)
+      assert.match(html, /id="btn-view-proof"/)
+      assert.match(html, /id="generated-cells-list"/)
+      assert.match(html, /id="rt-quota"/)
+      assert.doesNotMatch(html, /\bonclick=/i)
+
+      // When PORTAL_CELLS_DIR (generatedCellsDir) is unset, POST /api/generate fails cleanly with 503 instead of mutating scenes/
+      const unconfiguredRes = await fetch(`${portal.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: 'A conveyor cell' }),
+      })
+      assert.equal(unconfiguredRes.status, 503)
     } finally {
       await portal.close()
       oipStub.cleanup()

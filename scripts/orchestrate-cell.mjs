@@ -284,6 +284,7 @@ export async function generateCell({
   verifyLive = false,
   force = false,
   repoRoot = REPO_ROOT,
+  cellsDir = null,
   onEvent = () => {},
   runAgent = runOpenCodeAgent,
   probeModels = probeModelPair,
@@ -311,7 +312,7 @@ export async function generateCell({
   if (slug === 'conveyor-cell') {
     throw new Error('Refusing to overwrite protected Task 1 reference Cell "conveyor-cell". Choose a different --name.')
   }
-  const targetCellDir = join(repoRoot, 'scenes', slug)
+  const targetCellDir = cellsDir ? join(resolve(cellsDir), slug) : join(repoRoot, 'scenes', slug)
   if (existsSync(targetCellDir) && !force) {
     throw new Error(`Cell "scenes/${slug}" already exists. Pass --force to overwrite or pick a new --name.`)
   }
