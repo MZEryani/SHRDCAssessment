@@ -4,10 +4,10 @@ Disclosed reference for [`openplc-st`](SKILL.md). Consult when packaging Runtime
 
 ## OpenPLC Runtime v4.1+ `program.zip` Packaging
 
-OpenPLC Runtime v4.1+ rejects legacy MatIEC bundles (`exit 2`). Use `scripts/openplc-deploy.mjs` (`npm run plc:deploy:cell`), which compiles with `.tools/strucpp/strucpp/strucpp --debug` and builds a `program.zip` containing:
+OpenPLC Runtime v4.1+ rejects legacy MatIEC bundles (`exit 2`). Use `scripts/openplc-deploy.mjs` (`npm run plc:deploy:cell`), which delegates packaging to `scripts/plc-bundle.mjs` (compiling with `.tools/strucpp/strucpp/strucpp --debug` and building `program.zip`) containing:
 
 - `generated.hpp` and `generated.cpp` (emitted by `STruC++`)
-- `generated_debug.cpp` — standalone `strucpp` CLI omits this TU, so `scripts/openplc-deploy.mjs` supplies an 8-line empty `strucpp::debug` table so `dlopen` resolves `debug_array_count`
+- `generated_debug.cpp` — standalone `strucpp` CLI omits this TU, so `scripts/plc-bundle.mjs` supplies an 8-line empty `strucpp::debug` table so `dlopen` resolves `debug_array_count`
 - `defines.h` containing `#define PROGRAM_MD5 "<md5-of-st>"`
 - `strucpp_runtime/include/*.hpp` copied from `.tools/strucpp/strucpp/runtime/include`
 - `conf/modbus_master.json` — placing this file in the zip automatically enables `modbus_master` in `plugins.conf`
