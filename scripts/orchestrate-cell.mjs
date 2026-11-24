@@ -115,9 +115,10 @@ export function buildWorkerPrompt({
       contextBlock,
       '',
       `1. Call the skill tool to load "openplc-st".`,
-      `2. Author "scenes/${slug}/plc/program.st" matching the frozen plc.functionBlockName, plc.programName, all located AT signals (in their own dedicated VAR block), NC boundary inversion for any contact:"NC" signal, and TASK INTERVAL matching parameters.scanIntervalMs.`,
-      `3. Self-heal (max 2 attempts): Run \`${linkCmd} && .tools/strucpp/strucpp/strucpp scenes/${slug}/plc/program.st --debug -o /tmp/check_${slug}.cpp\` and fix any errors.`,
-      `4. Only modify "scenes/${slug}/plc/program.st". Reply with one concise summary sentence.`,
+      `2. Do NOT browse, glob, grep, or read Open-Industry-Project/, scripts/, or other scenes/ — the complete frozen I/O Contract and Process Specification are already above.`,
+      `3. Immediately write "scenes/${slug}/plc/program.st" matching the frozen plc.functionBlockName, plc.programName, all located AT signals (in their own dedicated VAR block), NC boundary inversion for any contact:"NC" signal, and TASK INTERVAL matching parameters.scanIntervalMs.`,
+      `4. Self-heal (max 2 attempts): Run \`${linkCmd} && .tools/strucpp/strucpp/strucpp scenes/${slug}/plc/program.st --debug -o /tmp/check_${slug}.cpp\` and fix any errors.`,
+      `5. Only modify "scenes/${slug}/plc/program.st". Reply with one concise summary sentence.`,
     ].join('\n')
   }
 
@@ -137,8 +138,9 @@ export function buildWorkerPrompt({
     contextBlock,
     '',
     `1. Call the skill tool to load "plc-oip-verify" and read ".opencode/skills/plc-oip-verify/verification-seams.md".`,
-    `2. Author "scenes/${slug}/tests/program.test.st" testing FUNCTION_BLOCK <plc.functionBlockName> across every core process behavior in the Process Specification above using exact signal names from the I/O Contract, single-quoted TEST '...' titles, top-level ADVANCE_TIME(<ns>); only, and SETUP instantiating the function block.`,
-    `3. Only modify "scenes/${slug}/tests/program.test.st". Reply with one concise summary sentence.`,
+    `2. Do NOT browse, glob, grep, or read Open-Industry-Project/, scripts/, or other scenes/ — the complete frozen I/O Contract and Process Specification are already above.`,
+    `3. Immediately write "scenes/${slug}/tests/program.test.st" testing FUNCTION_BLOCK <plc.functionBlockName> across every core process behavior in the Process Specification above using exact signal names from the I/O Contract, single-quoted TEST '...' titles, top-level ADVANCE_TIME(<ns>); only, and SETUP instantiating the function block.`,
+    `4. Only modify "scenes/${slug}/tests/program.test.st". Reply with one concise summary sentence.`,
   ].join('\n')
 }
 
@@ -285,6 +287,7 @@ export async function generateCell({
   force = false,
   repoRoot = REPO_ROOT,
   cellsDir = null,
+  workerStaggerMs = undefined,
   onEvent = () => {},
   runAgent = runOpenCodeAgent,
   probeModels = probeModelPair,
@@ -495,13 +498,18 @@ export async function generateCell({
 
     machine = stepMachine(machine, { type: 'ORCHESTRATOR_DONE' })
 
-    // Stage 2: 3 parallel workers in isolated git worktrees
+    // Stage 2: 3 parallel workers in isolated git worktrees (lightly staggered to avoid TPM bursts)
     const frozenContractJson = readFileSync(join(baseCellDir, 'io-contract.json'), 'utf8')
     const frozenSpecText = readFileSync(join(baseCellDir, 'process-spec.md'), 'utf8')
+    const effectiveStaggerMs =
+      workerStaggerMs !== undefined ? workerStaggerMs : runAgent === runOpenCodeAgent ? 4000 : 0
     onEvent({ stage: 'stage2', slug, model: resolvedWorkerModel })
     log(`[generate:${runId}] Stage 2: Dispatching 3 parallel workers (${resolvedWorkerModel}) in isolated git worktrees...`)
     const workerSettled = await Promise.allSettled(
-      workerSpecs.map(async (workerSpec) => {
+      workerSpecs.map(async (workerSpec, idx) => {
+        if (effectiveStaggerMs > 0 && idx > 0) {
+          await new Promise((r) => setTimeout(r, effectiveStaggerMs * idx))
+        }
         const res = await runAgent({
           agent: workerSpec.agent,
           model: resolvedWorkerModel,
