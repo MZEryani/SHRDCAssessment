@@ -22,6 +22,7 @@ describe('Docker 3-Container EC2 Stack & Local Override Configuration', () => {
     assert.match(dockerfile, /66cf6adeb02fbfe9ccbb1f6497fcf46cecf2d299a1dc3a7a32e01ea30ff20201/)
     assert.match(dockerfile, /fed468566215fd38b26abab99018240c0d30772d3f45aee25621664ceff7e360/)
     assert.match(dockerfile, /sha256sum -c -/)
+    assert.match(dockerfile, /\bg\+\+\s/)
     assert.match(dockerfile, /git init -b main/)
     assert.match(dockerfile, /^USER node$/m)
     assert.match(dockerfile, /PORTAL_CELLS_DIR=\/data\/cells/)

@@ -34,6 +34,7 @@ ARG OPENCODE_SHA256_ARM64=fed468566215fd38b26abab99018240c0d30772d3f45aee2562166
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    g++ \
     git \
     ripgrep \
   && rm -rf /var/lib/apt/lists/*
