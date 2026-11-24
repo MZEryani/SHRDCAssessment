@@ -143,7 +143,7 @@ export function mergeWorkerBranches({
   for (const worker of workers) {
     const branch = `orchestrate/${runId}/${worker.name}`
     createdBranches.push(branch)
-    execFileSync('git', ['-C', worker.worktreePath, 'checkout', '-b', branch], { stdio: 'pipe' })
+    execFileSync('git', ['-C', worker.worktreePath, 'checkout', '-B', branch], { stdio: 'pipe' })
     if (baseRef !== 'HEAD') {
       // Align worker branch parent to baseRef while keeping worker's authored files intact
       execFileSync('git', ['-C', worker.worktreePath, 'reset', '--mixed', baseRef], {

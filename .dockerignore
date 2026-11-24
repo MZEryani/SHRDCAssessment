@@ -1,0 +1,15 @@
+.git
+.scratch
+.tools
+Open-Industry-Project
+node_modules
+.env
+.env.*
+!.env.example
+.opencode/auth*
+*.key
+*.pem
+scenes/*
+!scenes/conveyor-cell
+*.log
+.DS_Store

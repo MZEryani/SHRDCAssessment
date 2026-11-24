@@ -1,0 +1,17 @@
+# Local macOS HTTP override for zero-TLS containerized verification (Seam 2).
+# Usage:
+#   docker compose -f docker-compose.ec2.yml -f docker-compose.local.yml up --build -d
+services:
+  caddy:
+    ports: !override
+      - "127.0.0.1:${LOCAL_PORTAL_PORT:-8080}:80"
+    environment:
+      DEMO_DOMAIN: ":80"
+    volumes: !override
+      - ./infra/Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  demo-portal:
+    environment:
+      FORCE_SECURE_COOKIES: "0"

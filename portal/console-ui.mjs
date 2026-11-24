@@ -979,7 +979,7 @@ ${SHARED_THEME_CSS}
           badgeEl.className = 'status-badge'
         } else {
           lockEl.textContent = 'Available (' + leaseTotalMins + 'm)'
-          badgeEl.className = plc.plcStatus === 'RUNNING' ? 'status-badge' : 'status-badge warn'
+          badgeEl.className = String(plc.plcStatus || '').includes('RUNNING') ? 'status-badge' : 'status-badge warn'
         }
 
         const eventsList = document.getElementById('rt-events')

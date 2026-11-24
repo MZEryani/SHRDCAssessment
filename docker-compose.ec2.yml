@@ -1,0 +1,69 @@
+name: shrdc-ec2
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DEMO_DOMAIN: ${DEMO_DOMAIN:-}
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      demo-portal:
+        condition: service_healthy
+    networks:
+      - shrdc-internal
+
+  demo-portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3000"
+      MODBUS_LISTEN_HOST: "0.0.0.0"
+      MODBUS_LISTEN_PORT: "5020"
+      PORTAL_CELLS_DIR: "/data/cells"
+      OPENPLC_URL: "https://openplc-runtime:8443"
+      OIP_MODBUS_HOST: "demo-portal"
+      OPENPLC_USERNAME: ${OPENPLC_USERNAME:-openplc}
+      OPENPLC_PASSWORD: ${OPENPLC_PASSWORD:?OPENPLC_PASSWORD is required}
+      DEMO_ACCESS_TOKEN: ${DEMO_ACCESS_TOKEN:?DEMO_ACCESS_TOKEN is required}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DAILY_GENERATION_CAP: ${DAILY_GENERATION_CAP:-10}
+      MODBUS_LEASE_TIMEOUT_MS: ${MODBUS_LEASE_TIMEOUT_MS:-1800000}
+      FORCE_SECURE_COOKIES: ${FORCE_SECURE_COOKIES:-1}
+      NODE_OPTIONS: "--max-old-space-size=1536"
+    volumes:
+      - generated-cells:/data/cells
+    depends_on:
+      - openplc-runtime
+    networks:
+      - shrdc-internal
+
+  openplc-runtime:
+    image: ghcr.io/autonomy-logic/openplc-runtime:latest
+    restart: unless-stopped
+    cap_add:
+      - SYS_NICE
+      - SYS_RESOURCE
+    volumes:
+      - openplc-runtime-data:/var/run/runtime
+    networks:
+      - shrdc-internal
+
+volumes:
+  caddy-data:
+  caddy-config:
+  generated-cells:
+  openplc-runtime-data:
+
+networks:
+  shrdc-internal:
+    driver: bridge

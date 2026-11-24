@@ -1,0 +1,7 @@
+:80 {
+	encode zstd gzip
+
+	reverse_proxy demo-portal:3000 {
+		flush_interval -1
+	}
+}
