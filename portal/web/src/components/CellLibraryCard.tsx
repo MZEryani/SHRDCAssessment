@@ -124,7 +124,7 @@ export function CellLibraryCard({
                     ) : (
                       <Play className="h-3.5 w-3.5" aria-hidden="true" />
                     )}
-                    <span>Deploy &amp; 3D</span>
+                    <span>Deploy &amp; Launch OIP 3D</span>
                   </button>
                   <button
                     type="button"

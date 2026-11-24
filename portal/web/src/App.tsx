@@ -136,7 +136,7 @@ export function App() {
           running: false,
           stage: 'stage4',
           outcome: 'done',
-          message: `Generated "${data.slug}" — passed 3-gate verification.`,
+          message: `Generated "${data.slug}" — passed verification.`,
         }))
         void refreshCells()
         void refreshStatus()

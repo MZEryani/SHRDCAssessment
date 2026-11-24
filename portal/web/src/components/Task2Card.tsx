@@ -165,7 +165,7 @@ export function Task2Card({
               htmlFor="cell-name-input"
               className="block text-xs font-semibold text-muted mb-1"
             >
-              Cell Slug <span className="font-normal">(optional)</span>
+              Cell Name <span className="font-normal">(optional)</span>
             </label>
             <input
               id="cell-name-input"
