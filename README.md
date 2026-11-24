@@ -148,12 +148,59 @@ opencode debug agents --standalone
 npm run opencode:probe
 ```
 
+## Containerized Amazon EC2 Deployment (Zero Local Setup)
+
+Both assessment deliverables can also be evaluated directly from any desktop browser via the 3-container Docker Compose stack deployed on Amazon EC2 (`ap-southeast-1`, [ADR-0005](docs/adr/0005-ec2-dockerized-browser-oip-websocket-modbus-bridge.md)):
+
+```mermaid
+flowchart LR
+  Browser["Recruiter Browser<br/>(Console + OIP 3D GPU)"] -- "HTTPS + WSS (:443)" --> Caddy["caddy:2-alpine<br/>Automatic Let's Encrypt TLS"]
+  subgraph EC2["Amazon EC2 t3.medium (shrdc-internal Docker bridge)"]
+    Caddy -- "HTTP/SSE/WS (:3000)" --> Portal["demo-portal (non-root Node 24)<br/>Auth + OIP Bridge + STruC++ + OpenCode"]
+    OpenPLC["openplc-runtime v4<br/>(:8443 internal)"] -- "Modbus TCP (:5020)" --> Portal
+    Portal -- "REST deploy (:8443)" --> OpenPLC
+    Portal --- Vol[("generated-cells<br/>/data/cells")]
+  end
+  EC2 -. "IAM Instance Profile" .-> SM["AWS Secrets Manager<br/>(single secret ARN)"]
+  Operator["Operator CLI"] -. "SSM Session Manager / SendCommand<br/>(No SSH port 22)" .-> EC2
+```
+
+### AWS Security & Cost Posture (`infra/cloudformation.yaml`)
+
+- **Zero SSH exposure:** Security Group allows strictly TCP `80` (ACME / HTTPS redirect) and `443` (HTTPS). Shell access and code deploys use AWS Systems Manager Session Manager (`SSM`) only.
+- **IMDSv2 + Encrypted EBS:** Launch Template enforces `HttpTokens: required` (`HttpPutResponseHopLimit: 1`) and an encrypted 30 GB `gp3` root volume + 2 GiB swapfile.
+- **Least-privilege IAM + Zero-Echo Secrets:** Instance role grants only `AmazonSSMManagedInstanceCore` and `secretsmanager:GetSecretValue` scoped to the single `shrdc-assessment/demo-portal-*` secret ARN; cloud-init writes root-only `0600` `.env.runtime`.
+- **Stable HTTPS & Guardrails:** Permanent Elastic IP provides `https://<eip>.sslip.io` with automatic Caddy TLS, strict single-session 30-minute Modbus bridge lock, single-flight Task 2 lock + daily generation cap, and an optional $15/month AWS Budget alert (`BudgetAlertEmail`).
+
+### Local Container Verification (macOS / Linux)
+
+```bash
+DEMO_ACCESS_TOKEN=local-dev-token OPENPLC_PASSWORD=local-openplc-pass \
+  docker compose -f docker-compose.ec2.yml -f docker-compose.local.yml up --build -d
+
+BASE_URL=http://127.0.0.1:8080 DEMO_ACCESS_TOKEN=local-dev-token npm run verify:docker-e2e
+```
+
+### AWS Operator Lifecycle (`scripts/aws-ec2.mjs`)
+
+```bash
+npm run aws:seed-secret                              # Zero-echo seed Secrets Manager from local OpenCode key + random tokens
+npm run aws:provision -- --budget-email you@dom.com  # Deploy infra/cloudformation.yaml in ap-southeast-1
+npm run aws:deploy                                   # Fast SSM redeploy (reuses cached OIP Docker layer)
+npm run aws:status                                   # Show instance state, Elastic IP, and HTTPS URL
+npm run aws:stop                                     # Pause compute billing (preserves EBS + Elastic IP)
+npm run aws:start                                    # Resume instance at the same https://<eip>.sslip.io URL
+npm run aws:destroy                                  # Tear down the full CloudFormation stack
+```
+
 ## Repository Layout
 
 - `openplc/` — Canonical `I/O Contract` (`io-contract.json`), Modbus TCP master config (`conveyor_cell_modbus_master.json`), and tracer artifacts (`tracer_*`)
 - `scenes/conveyor-cell/` — Headless-authored OIP 3D Cell (`project.json`, `scene.json`) and authoritative IEC 61131-3 ST program (`plc/program.st`)
+- `portal/` — Authenticated Demo Portal, pre-boot OIP WebSocket-to-Modbus TCP bridge, and Task 2 SSE generation manager
+- `infra/` — Declarative AWS CloudFormation template (`cloudformation.yaml`) and Caddy reverse-proxy configs
 - `.opencode/skills/` — Progressive-disclosure domain skills (`openplc-st`, `oip-scene`, `plc-oip-verify`)
 - `.opencode/agents/` — Tiered agent definitions (`orchestrator`, `plc-coder`, `oip-builder`, `test-engineer`)
-- `scripts/` — Headless OpenPLC REST deployer (`openplc-deploy.mjs`), OIP Cell validator (`validate-oip-cell.mjs`), and parallel worktree orchestrator (`orchestrate-cell.mjs`)
-- `tests/` — STruC++ scan-cycle unit tests, Modbus tracer, live E2E physics test, OpenCode config tests, and orchestration tests
+- `scripts/` — Headless OpenPLC REST deployer (`openplc-deploy.mjs`), OIP Cell validator (`validate-oip-cell.mjs`), parallel worktree orchestrator (`orchestrate-cell.mjs`), Docker E2E verifier (`verify-docker-e2e.mjs`), and AWS SSM lifecycle CLI (`aws-ec2.mjs`)
+- `tests/` — STruC++ scan-cycle unit tests, Modbus tracer, live E2E physics test, OpenCode config & orchestration tests, Demo Portal tests, Docker stack tests, and AWS IaC security tests
 - `docs/` — ADRs (`docs/adr/`), process spec (`cell-process-spec.md`), and captured orchestration proof (`orchestration-proof.{md,json}`)
