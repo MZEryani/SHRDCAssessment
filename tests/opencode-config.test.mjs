@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -91,6 +91,7 @@ describe('OpenCode progressive-disclosure skills, tiered agents, and secret igno
     for (const { id, skill } of workers) {
       const worker = byId.get(id)
       assert.ok(worker, `Expected custom worker agent "${id}" to be discovered`)
+      assert.equal(worker.mode, 'all', `Worker "${id}" must declare mode: all for CLI dispatch`)
       assert.equal(modelSpec(worker), 'google/gemini-3.8-flash')
       assert.notEqual(
         modelSpec(worker),
@@ -127,5 +128,56 @@ describe('OpenCode progressive-disclosure skills, tiered agents, and secret igno
       assert.equal(isGitIgnored(file), true, `Expected "${file}" to be ignored by .gitignore`)
     }
     assert.equal(isGitIgnored('.env.example'), false, 'Expected ".env.example" to remain trackable')
+  })
+
+  it('keeps agent definitions and skills completely generic with zero Conveyor-Cell prompt leakage', () => {
+    const walkMarkdown = (dir) => {
+      const files = []
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry)
+        if (statSync(full).isDirectory()) files.push(...walkMarkdown(full))
+        else if (entry.endsWith('.md')) files.push(full)
+      }
+      return files
+    }
+
+    const forbiddenPatterns = [
+      /conveyor-cell/i,
+      /ConveyorCell/,
+      /BATCH_TARGET/,
+      /DWELL_TIME/,
+      /JAM_THRESHOLD_TIME/,
+      /\bbelt_1\b/,
+      /\bspawner_1\b/,
+      /\bphotoeye_1\b/,
+      /\bbatch_indicator\b/,
+      /conveyor_cell_modbus_master/,
+      /0\.35,1\.25,0/,
+      /\b0\.085\b/,
+      /\b6\.17\b/,
+      /\b0\.457\b/,
+      /\bReset_Count_PB\b/,
+      /\bSpawner_Enable\b/,
+      /\bDwell_Light\b/,
+      /\bBox_Count\b/,
+      /\bPhotoEye\b/,
+    ]
+
+    const mdFiles = [
+      ...walkMarkdown(join(OPENCODE_DIR, 'agents')),
+      ...walkMarkdown(join(OPENCODE_DIR, 'skills')),
+    ]
+    assert.ok(mdFiles.length > 0, 'Expected agent and skill markdown files to exist')
+
+    for (const file of mdFiles) {
+      const text = readFileSync(file, 'utf8')
+      for (const rx of forbiddenPatterns) {
+        assert.doesNotMatch(
+          text,
+          rx,
+          `Found leaked Conveyor-Cell reference (${rx}) in ${file}`,
+        )
+      }
+    }
   })
 })

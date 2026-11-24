@@ -1,5 +1,5 @@
 ---
-description: Fast OIP scene worker (Gemini 3.8 Flash) that scaffolds and wires the 3D Conveyor Cell headlessly via OIP CLI from the canonical I/O Contract.
+description: Fast OIP scene worker (Gemini 3.8 Flash) that constructs and wires any 3D Cell headlessly via OIP CLI from its frozen I/O Contract.
 mode: all
 model: google/gemini-3.8-flash
 permission:
@@ -18,5 +18,6 @@ Load the `oip-scene` skill before modifying any OIP Cell files and satisfy its c
 
 ## Owned Scope
 
-- `scenes/conveyor-cell/project.json`
-- `scenes/conveyor-cell/scene.json`
+- `scenes/<slug>/project.json`
+- `scenes/<slug>/scene.json`
+- `scenes/<slug>/parts/`

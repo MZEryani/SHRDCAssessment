@@ -1,33 +1,33 @@
 ---
 name: openplc-st
-description: Author and compile IEC 61131-3 Structured Text for OpenPLC Runtime v4 (STruC++) and Modbus TCP master config. Use when writing or editing .st programs or modbus_master.json.
+description: Author and compile IEC 61131-3 Structured Text for OpenPLC Runtime v4 (STruC++) from a Cell's frozen I/O Contract. Use when creating or fixing scenes/<slug>/plc/program.st.
 ---
 
 # OpenPLC v4 Structured Text (`STruC++`)
 
-Author IEC 61131-3 Structured Text (`ST`) for OpenPLC Runtime v4.1+ (`STruC++` compiler) and its Modbus TCP master configuration.
+Author clean, scan-cycle-testable IEC 61131-3 Structured Text (`ST`) for OpenPLC Runtime v4.1+ (`STruC++`) matching a Cell's frozen `I/O Contract`.
 
-## Workflow
+## Steps
 
-1. Read `openplc/io-contract.json` and `GLOSSARY.md` first. Every symbolic signal name and IEC address (`%IX`, `%QX`, `%QW`) must match the `I/O Contract` 1:1 and use Glossary terms.
-2. Put reusable control logic inside a `FUNCTION_BLOCK` (for scan-cycle unit testing) and wire located I/O in a top-level `PROGRAM` + `CONFIGURATION`.
-3. Place located `AT %IX` / `AT %QX` / `AT %QW` variables in their own dedicated `VAR ... END_VAR` block, separate from ordinary and function-block variables, so both `STruC++` and OIP's `check-st` accept the file identically.
-4. Author the Conveyor Cell program directly in `scenes/conveyor-cell/plc/program.st` (the single authoritative ST source).
-5. Verify with `npm run plc:test` and (when OpenPLC Docker is up) `npm run plc:deploy:cell`.
+1. Read `scenes/<slug>/io-contract.json`, `scenes/<slug>/process-spec.md`, and `GLOSSARY.md`.
+2. Author `scenes/<slug>/plc/program.st` with three POUs matching the frozen contract:
+   - `FUNCTION_BLOCK <plc.functionBlockName>`: declare `VAR_INPUT` for every `oip_to_plc` signal and `VAR_OUTPUT` for every `plc_to_oip` signal using exact signal names and types from `io-contract.json`. Keep all internal logic active-high and start in a safe stopped state.
+   - `PROGRAM <plc.programName>`: place all located `AT %IX` / `AT %IW` / `AT %QX` / `AT %QW` variables in their own dedicated `VAR ... END_VAR` block, separate from the function-block instance and internal variables, so both `STruC++` and OIP `check-st` accept the file identically.
+   - `CONFIGURATION Config0`: bind `<plc.programName>` to a cyclic `TASK` whose `INTERVAL` matches `parameters.scanIntervalMs`.
+3. Compile `scenes/<slug>/plc/program.st` with `.tools/strucpp/strucpp/strucpp scenes/<slug>/plc/program.st --debug -o /tmp/check_cell.cpp` and fix any compiler errors before finishing (max 2 attempts).
 
-## Required Control Semantics
+## Core Authoring Rules
 
-- **Start interlock**: Gate `Start_PB` through `R_TRIG` so holding `Start_PB` while releasing `EStop` can never auto-restart the Cell.
-- **Fail-safe NC E-Stop**: OIP's `emergencyStop: true` push button (`estop_pb`) is always Normally Closed (`TRUE` = released/healthy, `FALSE` = struck/tripped). Invert `%IX0.2` at the `ConveyorCellMain` boundary (`EStop := NOT EStop`) while keeping `ConveyorCellController`'s internal `EStop` active-high (`TRUE` = tripped).
-- **Anti-touching spawner**: Inhibit `Spawner_Enable` whenever `Conveyor_Run` is `FALSE` (Stop, E-Stop, Inspection Dwell, Jam Fault). Pulse `Spawner_Enable` for `SPAWN_PULSE_TIME` then enforce `SPAWN_COOLDOWN_TIME`. If `Conveyor_Run` drops mid-pulse, transition directly into cooldown so resuming never emits back-to-back pulses.
-- **Inspection Dwell & Batch**: Increment `Box_Count` on `R_TRIG` of `PhotoEye`. Halt at `BATCH_TARGET`; otherwise enter `Inspection Dwell` (`Dwell_Light := TRUE`, `Conveyor_Run := FALSE`). Allow `Reset_Count_PB` only when the Cell is stopped.
-- **Jam Fault**: Latch `Jam_Fault` if `PhotoEye` remains continuously `TRUE` while `Conveyor_Run` is `TRUE` past `JAM_THRESHOLD_TIME`. Clear only when `PhotoEye` is `FALSE`, `EStop` is `FALSE`, and operator resets or stops.
+- **Fail-safe NC boundary inversion**: For any signal with `"contact": "NC"` (such as an `emergencyStop` push button where `TRUE` = released/healthy and `FALSE` = struck/tripped), invert the input at the `PROGRAM` call site (`<SigName> := NOT <SigName>`) while keeping the `FUNCTION_BLOCK` internal input active-high (`TRUE` = tripped).
+- **Edge-gated Start**: Gate any Start push button through `R_TRIG` so holding Start while releasing Stop or E-Stop cannot auto-restart the Cell.
+- **Spawner pacing**: When the Cell includes a box spawner (`oip.box-spawner`), inhibit its enable coil whenever its downstream conveyor is stopped, and pulse/cooldown spawning so boxes maintain clear physical separation.
+- **Modbus config ownership**: Leave `scenes/<slug>/plc/modbus_master.json` untouched — the generator derives it deterministically from `io-contract.json`.
 
 ## Disclosed Reference
 
-Read [`strucpp-modbus-reference.md`](strucpp-modbus-reference.md) when packaging `program.zip` for OpenPLC Runtime v4 REST deployment or editing `openplc/conveyor_cell_modbus_master.json`.
+Read [`strucpp-modbus-reference.md`](strucpp-modbus-reference.md) when debugging `STruC++` compilation errors, OpenPLC Runtime v4 `program.zip` packaging, or Modbus function-code mappings (`%IX`/`%IW`/`%QX`/`%QW`).
 
 ## Completion Criterion
 
-- `npm run plc:test` passes with zero failures.
-- `scenes/conveyor-cell/plc/program.st` and `openplc/conveyor_cell_modbus_master.json` match `openplc/io-contract.json` 1:1.
+- `scenes/<slug>/plc/program.st` compiles with exit `0` under `STruC++ --debug`.
+- Every located `AT` variable, `FUNCTION_BLOCK` name, `PROGRAM` name, and `TASK` scan interval matches `scenes/<slug>/io-contract.json` 1:1.

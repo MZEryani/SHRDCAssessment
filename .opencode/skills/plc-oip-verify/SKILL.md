@@ -1,33 +1,24 @@
 ---
 name: plc-oip-verify
-description: Verify OpenPLC v4 PLC logic, OIP Cell integrity, and live Modbus TCP E2E behavior. Use when writing or executing ST unit tests, OIP validators, or headless SimWorld Modbus tests.
+description: Author STruC++ scan-cycle unit tests for any generated Cell from its frozen I/O Contract and process spec. Use when creating or fixing scenes/<slug>/tests/program.test.st.
 ---
 
 # PLC & OIP Automated Verification
 
-Verify the Conveyor Cell across its three external seams without coupling tests to internal implementation details.
+Author deterministic, behavior-focused `STruC++` scan-cycle unit tests for any generated Cell's `FUNCTION_BLOCK`.
 
-## Workflow
+## Steps
 
-1. Read `openplc/io-contract.json` and `GLOSSARY.md` so test assertions derive addresses from the canonical `I/O Contract` and use Glossary vocabulary.
-2. Execute verification from fastest seam to highest seam:
-   - **PLC scan-cycle seam**: `npm run plc:test` (`tests/conveyor_cell.test.st` via `STruC++`)
-   - **OIP Cell integrity seam**: `npm run oip:validate` (`scripts/validate-oip-cell.mjs`)
-   - **Modbus tracer seam**: `npm run test:tracer` (`tests/tracer-modbus.test.mjs`)
-   - **End-to-end physics + Modbus seam**: `npm run test:e2e` (`tests/conveyor-cell-e2e.test.mjs`)
-3. Assert observable external behavior at every seam:
-   - Start latch, Stop clean halt, E-Stop immediate drop + no auto-restart on release
-   - Photo-Eye rising-edge count + 2-second Inspection Dwell
-   - 5-box Batch auto-halt + Reset allowed only when stopped
-   - Anti-touching physical box spacing (`centerGap >= BOX_LENGTH_M + 0.05m`)
-   - Photo-Eye continuous-block Jam Fault latch and clear
+1. Read `scenes/<slug>/io-contract.json`, `scenes/<slug>/process-spec.md`, and `GLOSSARY.md`.
+2. Author `scenes/<slug>/tests/program.test.st` targeting `FUNCTION_BLOCK <plc.functionBlockName>` using only signal names declared in `scenes/<slug>/io-contract.json`:
+   - Instantiate `cell : <plc.functionBlockName>;` in `SETUP ... END_SETUP` with all inputs in their safe resting state (`FUNCTION_BLOCK` internal inputs are active-high even when an external signal is `contact: "NC"`).
+   - Write one focused `TEST '...'` block per core process behavior in `process-spec.md` (safe stopped startup, Start/Stop latch, E-Stop drop + no auto-restart when present, sensor/actuator reactions, counters/timers/faults).
+   - Place `ADVANCE_TIME(<nanoseconds>);` strictly as a top-level statement inside `TEST ... END_TEST` to step timers.
 
 ## Disclosed Reference
 
-Read [`verification-seams.md`](verification-seams.md) when:
-- Writing or modifying headless `SimWorld` + `ModbusServerIo` Node tests
-- Debugging OpenPLC Docker connectivity or `strucpp --test` failures
+Read [`verification-seams.md`](verification-seams.md) when you need `strucpp --test` assertion macros, nanosecond `ADVANCE_TIME` examples, or post-merge `cell:verify` gate details.
 
 ## Completion Criterion
 
-- All applicable seams pass (`npm run plc:test`, `npm run oip:validate`, `npm run test:tracer`, `npm run test:e2e`) with zero failures or skipped assertions.
+- `scenes/<slug>/tests/program.test.st` instantiates `<plc.functionBlockName>`, uses single-quoted `TEST '...'` titles and top-level `ADVANCE_TIME`, references only contracted signals, and covers every core behavior in `scenes/<slug>/process-spec.md`.

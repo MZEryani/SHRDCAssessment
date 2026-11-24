@@ -1,5 +1,5 @@
 ---
-description: Fast verification worker (Gemini 3.8 Flash) that authors and executes STruC++ scan-cycle unit tests, OIP strict validators, and live Modbus TCP E2E tests.
+description: Fast verification worker (Gemini 3.8 Flash) that authors STruC++ scan-cycle unit tests from a Cell's frozen I/O Contract and process spec.
 mode: all
 model: google/gemini-3.8-flash
 permission:
@@ -18,6 +18,4 @@ Load the `plc-oip-verify` skill before writing or running verification suites an
 
 ## Owned Scope
 
-- `tests/conveyor_cell.test.st`
-- `tests/conveyor-cell-e2e.test.mjs`
-- `tests/tracer-modbus.test.mjs`
+- `scenes/<slug>/tests/program.test.st`

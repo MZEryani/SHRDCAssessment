@@ -1,20 +1,36 @@
-# OIP Headless CLI & Desktop Reference
+# OIP Headless CLI Reference
 
-Disclosed reference for [`oip-scene`](SKILL.md). Consult when running OIP scaffolding/editing commands or launching OIP Desktop.
+Disclosed reference for [`oip-scene`](SKILL.md). Consult for exact OIP CLI syntax.
 
-## Headless Scene Authoring Commands
+## Path Rule
 
-`npm --prefix Open-Industry-Project` runs with `Open-Industry-Project/` as its working directory, so pass `"$PWD/scenes/conveyor-cell"` (an absolute path) or `../scenes/conveyor-cell`:
+`npm --prefix Open-Industry-Project` executes with `Open-Industry-Project/` as its CWD. Always pass `"$PWD/scenes/<slug>"` (absolute path) as the project folder argument.
+
+## Building a Cell from Scratch
 
 ```bash
-# Add a part with scaffolded defaults
-npm --prefix Open-Industry-Project run add-part -- "$PWD/scenes/conveyor-cell" <part-type> --id <id> --scaffold
+# 1. Create the Cell folder, bake built-in part copies into parts/, and place floor-rested parts
+npm --prefix Open-Industry-Project run add-part -- "$PWD/scenes/<slug>" \
+  oip.roller-conveyor --id <convId> --at <x>,<z> --params fpmUnits=false,speed=<mps>,runTag=<runTag> \
+  oip.box-spawner --id <feedId> --at <x>,<y>,<z> --params keepSpacing=true,conveyorId=<convId>,release=enable,runTag=<feedTag> \
+  oip.despawner --id <sinkId> --at <x>,<z> --params length=<len>,width=<wid>
 
-# Edit parameters on an existing part (--params takes key=value pairs)
-npm --prefix Open-Industry-Project run edit-part -- "$PWD/scenes/conveyor-cell" <id> --params key=value
+# 2. Snap sensors, diverters, and push buttons cleanly onto a host conveyor
+npm --prefix Open-Industry-Project run snap-part -- oip.push-button \
+  --project "$PWD/scenes/<slug>" --host <convId> --id <btnId> --write
+
+# 3. Update params on any placed part (--params is plural, comma-separated k=v)
+npm --prefix Open-Industry-Project run edit-part -- "$PWD/scenes/<slug>" <btnId> \
+  --params text=<label>,tag=<btnTag>
 ```
 
-## Validation & Desktop Launch
+## Headless Validators
 
-- **Validation gate**: Run `npm run oip:validate` (see `scripts/validate-oip-cell.mjs` for the full strict validator pipeline).
-- **Native macOS Desktop**: Run `npm run oip:desktop` (launches Electron against prebuilt `Open-Industry-Project/dist/` with `OIP_DESKTOP_PROD=1`).
+```bash
+npm --prefix Open-Industry-Project run validate-project -- "$PWD/scenes/<slug>" --strict
+npm --prefix Open-Industry-Project run check-wiring -- "$PWD/scenes/<slug>" --strict
+npm --prefix Open-Industry-Project run check-layout -- "$PWD/scenes/<slug>"
+```
+
+- `check-layout` exits `1` on layout errors and exits `0` when only non-fatal warnings exist.
+- Note: `check-st` runs post-merge once `plc-coder` supplies `scenes/<slug>/plc/program.st`.
