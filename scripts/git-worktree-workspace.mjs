@@ -101,7 +101,7 @@ export function prepareGreenfieldBase({
 
   for (const relPath of stripFiles) {
     const full = join(baseWorktreePath, relPath)
-    if (existsSync(full)) rmSync(full, { force: true })
+    if (existsSync(full)) rmSync(full, { recursive: true, force: true })
   }
 
   execFileSync('git', ['-C', baseWorktreePath, 'add', '-A'], { stdio: 'pipe' })
