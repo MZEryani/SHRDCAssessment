@@ -3,7 +3,7 @@
 **OpenPLC Runtime v4** drives a 3D **Open Industry Project (OIP)** conveyor simulation over Modbus TCP. An **OpenCode** multi-agent pipeline turns plain-English process descriptions into verified OpenPLC Structured Text and runnable 3D OIP simulations.
 
 - **Demo Video:** https://youtu.be/-q-_DTVJEZ4
-- **Live Demo (Password Needed):** https://shrdc-demo.duckdns.org
+- **Live Demo:** Deployed on AWS EC2 on request (IaC in [infra/cloudformation.yaml](infra/cloudformation.yaml))
 
 ---
 
